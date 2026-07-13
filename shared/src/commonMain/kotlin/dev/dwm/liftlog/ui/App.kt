@@ -2,6 +2,7 @@ package dev.dwm.liftlog.ui
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.Icon
@@ -14,20 +15,28 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import dev.dwm.liftlog.data.db.AppDatabase
 import dev.dwm.liftlog.data.seed.seedExercisesIfEmpty
 import dev.dwm.liftlog.ui.history.HistoryScreen
+import dev.dwm.liftlog.ui.programs.ProgramsScreen
 import dev.dwm.liftlog.ui.workout.WorkoutTab
 
-enum class Tab { Workout, History }
+enum class Tab(val label: String, val icon: ImageVector) {
+    Workout("Workout", Icons.Default.FitnessCenter),
+    Programs("Programs", Icons.Default.EventNote),
+    History("History", Icons.Default.History),
+}
 
 @Composable
 fun App(db: AppDatabase) {
     var tab by remember { mutableStateOf(Tab.Workout) }
+    var workoutRefresh by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(Unit) { seedExercisesIfEmpty(db) }
 
@@ -35,24 +44,24 @@ fun App(db: AppDatabase) {
         Scaffold(
             bottomBar = {
                 NavigationBar {
-                    NavigationBarItem(
-                        selected = tab == Tab.Workout,
-                        onClick = { tab = Tab.Workout },
-                        icon = { Icon(Icons.Default.FitnessCenter, null) },
-                        label = { Text("Workout") },
-                    )
-                    NavigationBarItem(
-                        selected = tab == Tab.History,
-                        onClick = { tab = Tab.History },
-                        icon = { Icon(Icons.Default.History, null) },
-                        label = { Text("History") },
-                    )
+                    Tab.entries.forEach { t ->
+                        NavigationBarItem(
+                            selected = tab == t,
+                            onClick = { tab = t },
+                            icon = { Icon(t.icon, null) },
+                            label = { Text(t.label) },
+                        )
+                    }
                 }
             }
         ) { padding ->
             val modifier = Modifier.padding(padding)
             when (tab) {
-                Tab.Workout -> WorkoutTab(db, modifier)
+                Tab.Workout -> WorkoutTab(db, modifier, refreshKey = workoutRefresh)
+                Tab.Programs -> ProgramsScreen(db, modifier) {
+                    workoutRefresh++
+                    tab = Tab.Workout
+                }
                 Tab.History -> HistoryScreen(db, modifier)
             }
         }

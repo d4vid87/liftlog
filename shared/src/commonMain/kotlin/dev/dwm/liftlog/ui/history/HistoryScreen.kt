@@ -83,9 +83,9 @@ private fun WorkoutList(db: AppDatabase) {
 }
 
 @Composable
-private fun WorkoutDetail(db: AppDatabase, workoutId: Long) {
+private fun WorkoutDetail(db: AppDatabase, workoutId: String) {
     val sets by remember { db.workoutDao().setsForWorkout(workoutId) }.collectAsStateList()
-    var names by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var names by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     LaunchedEffect(sets) {
         names = sets.map { it.exerciseId }.distinct()
             .associateWith { db.exerciseDao().byId(it)?.name ?: "?" }

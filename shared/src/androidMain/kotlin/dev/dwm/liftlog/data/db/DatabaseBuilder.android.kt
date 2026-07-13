@@ -8,5 +8,6 @@ import kotlinx.coroutines.Dispatchers
 fun createDatabase(context: Context): AppDatabase =
     Room.databaseBuilder<AppDatabase>(context, context.getDatabasePath("liftlog.db").absolutePath)
         .setDriver(BundledSQLiteDriver())
+        .fallbackToDestructiveMigration(dropAllTables = true)
         .setQueryCoroutineContext(Dispatchers.IO)
         .build()

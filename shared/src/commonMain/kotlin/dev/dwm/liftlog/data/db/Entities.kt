@@ -3,35 +3,111 @@ package dev.dwm.liftlog.data.db
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.datetime.Clock
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
+
+@OptIn(ExperimentalUuidApi::class)
+fun newId(): String = Uuid.random().toString()
+
+fun nowMillis(): Long = Clock.System.now().toEpochMilliseconds()
 
 @Entity
 data class Exercise(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @PrimaryKey val id: String = newId(),
     val name: String,
     val category: String,
     val muscles: String,
     val equipment: String,
     val custom: Boolean = false,
+    val updatedAt: Long = nowMillis(),
+    val deletedAt: Long? = null,
 )
 
 @Entity
 data class Workout(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @PrimaryKey val id: String = newId(),
     val name: String,
     val startedAt: Long,
     val finishedAt: Long? = null,
+    val programDayId: String? = null,
+    val updatedAt: Long = nowMillis(),
+    val deletedAt: Long? = null,
 )
 
-@Entity(
-    indices = [Index("workoutId"), Index("exerciseId")]
-)
+@Entity(indices = [Index("workoutId"), Index("exerciseId")])
 data class WorkoutSet(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val workoutId: Long,
-    val exerciseId: Long,
+    @PrimaryKey val id: String = newId(),
+    val workoutId: String,
+    val exerciseId: String,
     val setIndex: Int,
     val weightKg: Double,
     val reps: Int,
+    val targetReps: Int? = null,
+    val amrap: Boolean = false,
     val rpe: Double? = null,
     val completed: Boolean = false,
+    val updatedAt: Long = nowMillis(),
+    val deletedAt: Long? = null,
 )
+
+@Entity
+data class Program(
+    @PrimaryKey val id: String = newId(),
+    val name: String,
+    val currentDayIndex: Int = 0,
+    val active: Boolean = false,
+    val updatedAt: Long = nowMillis(),
+    val deletedAt: Long? = null,
+)
+
+@Entity(indices = [Index("programId")])
+data class ProgramDay(
+    @PrimaryKey val id: String = newId(),
+    val programId: String,
+    val dayIndex: Int,
+    val name: String,
+    val updatedAt: Long = nowMillis(),
+    val deletedAt: Long? = null,
+)
+
+/**
+ * One exercise slot in a program day, including its progression state.
+ *
+ * rule:
+ *  - LINEAR: fixed sets×reps at workingWeightKg; success (all sets hit targetReps)
+ *    → +incrementKg; failLimit consecutive fails → deload 10%.
+ *  - DOUBLE: sets at workingWeightKg, reps range repsMin..repsMax; all sets at
+ *    repsMax → +incrementKg and reps reset to repsMin.
+ *  - TM_PCT: percent-of-training-max scheme (JSON in schemeJson, one entry per set:
+ *    {"pct":0.65,"reps":5,"amrap":false}); cycle of cycleLength workouts, then TM
+ *    += incrementKg (nSuns-style: bump keyed to AMRAP reps when amrapBump=true).
+ */
+@Entity(indices = [Index("programDayId")])
+data class ProgramExercise(
+    @PrimaryKey val id: String = newId(),
+    val programDayId: String,
+    val exerciseId: String,
+    val position: Int,
+    val rule: String,
+    val sets: Int = 3,
+    val repsMin: Int = 5,
+    val repsMax: Int = 5,
+    val workingWeightKg: Double = 20.0,
+    val tmKg: Double = 60.0,
+    val schemeJson: String? = null,
+    val cycleLength: Int = 1,
+    val cyclePos: Int = 0,
+    val incrementKg: Double = 2.5,
+    val failCount: Int = 0,
+    val failLimit: Int = 3,
+    val amrapBump: Boolean = false,
+    val updatedAt: Long = nowMillis(),
+    val deletedAt: Long? = null,
+)
+
+object Rules {
+    const val LINEAR = "LINEAR"
+    const val DOUBLE = "DOUBLE"
+    const val TM_PCT = "TM_PCT"
+}

@@ -37,28 +37,30 @@ import dev.dwm.liftlog.data.db.AppDatabase
 import dev.dwm.liftlog.data.db.Exercise
 import dev.dwm.liftlog.data.db.Workout
 import dev.dwm.liftlog.data.db.WorkoutSet
+import dev.dwm.liftlog.data.applyProgression
+import dev.dwm.liftlog.data.db.nowMillis
 import dev.dwm.liftlog.domain.platesPerSide
 import dev.dwm.liftlog.ui.collectAsStateList
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.datetime.Clock
 
-fun now(): Long = Clock.System.now().toEpochMilliseconds()
+fun now(): Long = nowMillis()
 
 @Composable
-fun WorkoutTab(db: AppDatabase, modifier: Modifier = Modifier) {
+fun WorkoutTab(db: AppDatabase, modifier: Modifier = Modifier, refreshKey: Int = 0) {
     var activeWorkout by remember { mutableStateOf<Workout?>(null) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) { activeWorkout = db.workoutDao().activeWorkout() }
+    LaunchedEffect(refreshKey) { activeWorkout = db.workoutDao().activeWorkout() }
 
     val workout = activeWorkout
     if (workout == null) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Button(onClick = {
                 scope.launch {
-                    val id = db.workoutDao().insertWorkout(Workout(name = "Workout", startedAt = now()))
-                    activeWorkout = Workout(id = id, name = "Workout", startedAt = now())
+                    val w = Workout(name = "Workout", startedAt = now())
+                    db.workoutDao().insertWorkout(w)
+                    activeWorkout = w
                 }
             }) { Text("Start Workout") }
         }
@@ -77,8 +79,8 @@ fun ActiveWorkoutScreen(
     val scope = rememberCoroutineScope()
     val sets by remember { db.workoutDao().setsForWorkout(workout.id) }
         .collectAsStateList()
-    var exercises by remember { mutableStateOf<Map<Long, Exercise>>(emptyMap()) }
-    var previous by remember { mutableStateOf<Map<Long, List<WorkoutSet>>>(emptyMap()) }
+    var exercises by remember { mutableStateOf<Map<String, Exercise>>(emptyMap()) }
+    var previous by remember { mutableStateOf<Map<String, List<WorkoutSet>>>(emptyMap()) }
     var showPicker by remember { mutableStateOf(false) }
     var restEndsAt by remember { mutableStateOf<Long?>(null) }
 
@@ -114,12 +116,12 @@ fun ActiveWorkoutScreen(
                     exercise = exercises[exerciseId],
                     sets = grouped[exerciseId].orEmpty(),
                     previous = previous[exerciseId].orEmpty(),
-                    onUpdate = { scope.launch { db.workoutDao().updateSet(it) } },
+                    onUpdate = { scope.launch { db.workoutDao().updateSet(it.copy(updatedAt = now())) } },
                     onComplete = { set ->
-                        scope.launch { db.workoutDao().updateSet(set.copy(completed = true)) }
+                        scope.launch { db.workoutDao().updateSet(set.copy(completed = true, updatedAt = now())) }
                         restEndsAt = now() + 90_000
                     },
-                    onDelete = { scope.launch { db.workoutDao().deleteSet(it) } },
+                    onDelete = { scope.launch { db.workoutDao().deleteSet(it.id) } },
                     onAddSet = { last ->
                         scope.launch {
                             db.workoutDao().insertSet(
@@ -152,7 +154,8 @@ fun ActiveWorkoutScreen(
             Button(
                 onClick = {
                     scope.launch {
-                        db.workoutDao().updateWorkout(workout.copy(finishedAt = now()))
+                        db.workoutDao().updateWorkout(workout.copy(finishedAt = now(), updatedAt = now()))
+                        applyProgression(db, workout)
                         onFinished()
                     }
                 },
