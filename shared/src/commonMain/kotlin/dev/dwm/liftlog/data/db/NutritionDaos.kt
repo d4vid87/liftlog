@@ -44,6 +44,9 @@ interface FoodLogDao {
     @Query("SELECT * FROM FoodLog WHERE deletedAt IS NULL AND epochDay = :epochDay ORDER BY meal, updatedAt")
     fun forDay(epochDay: Long): Flow<List<FoodLog>>
 
+    @Query("SELECT * FROM FoodLog WHERE deletedAt IS NULL AND epochDay BETWEEN :from AND :to")
+    suspend fun forRangeOnce(from: Long, to: Long): List<FoodLog>
+
     @Query(
         """SELECT l.epochDay AS epochDay, SUM(l.grams * f.kcal / 100.0) AS kcal
            FROM FoodLog l JOIN Food f ON f.id = l.foodId
@@ -77,6 +80,21 @@ interface WeightDao {
 
     @Query("SELECT * FROM WeightEntry WHERE deletedAt IS NULL ORDER BY epochDay")
     suspend fun all(): List<WeightEntry>
+}
+
+@Dao
+interface GroceryDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: GroceryItem)
+
+    @Query("UPDATE GroceryItem SET deletedAt = :now, updatedAt = :now WHERE id = :id")
+    suspend fun delete(id: String, now: Long = nowMillis())
+
+    @Query("UPDATE GroceryItem SET deletedAt = :now, updatedAt = :now WHERE checked = 1 AND deletedAt IS NULL")
+    suspend fun clearChecked(now: Long = nowMillis())
+
+    @Query("SELECT * FROM GroceryItem WHERE deletedAt IS NULL ORDER BY checked, name")
+    fun items(): Flow<List<GroceryItem>>
 }
 
 @Dao

@@ -35,6 +35,9 @@ interface SyncDao {
     @Query("SELECT * FROM WeightEntry WHERE updatedAt > :since")
     suspend fun weightsSince(since: Long): List<WeightEntry>
 
+    @Query("SELECT * FROM GroceryItem WHERE updatedAt > :since")
+    suspend fun groceriesSince(since: Long): List<GroceryItem>
+
     @Query("SELECT updatedAt FROM Exercise WHERE id = :id")
     suspend fun exerciseUpdatedAt(id: String): Long?
 
@@ -61,6 +64,12 @@ interface SyncDao {
 
     @Query("SELECT updatedAt FROM WeightEntry WHERE id = :id")
     suspend fun weightUpdatedAt(id: String): Long?
+
+    @Query("SELECT updatedAt FROM GroceryItem WHERE id = :id")
+    suspend fun groceryUpdatedAt(id: String): Long?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertGrocery(row: GroceryItem)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertExercise(row: Exercise)

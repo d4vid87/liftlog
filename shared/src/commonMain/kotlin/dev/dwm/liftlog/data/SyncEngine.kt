@@ -54,6 +54,7 @@ class SyncEngine(private val db: AppDatabase, engineClient: HttpClient) {
             "Food" to s.foodsSince(since).map { json.encodeToJsonElement(dev.dwm.liftlog.data.db.Food.serializer(), it) },
             "FoodLog" to s.foodLogsSince(since).map { json.encodeToJsonElement(dev.dwm.liftlog.data.db.FoodLog.serializer(), it) },
             "WeightEntry" to s.weightsSince(since).map { json.encodeToJsonElement(dev.dwm.liftlog.data.db.WeightEntry.serializer(), it) },
+            "GroceryItem" to s.groceriesSince(since).map { json.encodeToJsonElement(dev.dwm.liftlog.data.db.GroceryItem.serializer(), it) },
         ).filterValues { it.isNotEmpty() }
 
         val response: SyncResponse = client.post("${baseUrl.trimEnd('/')}/api/sync") {
@@ -110,6 +111,10 @@ class SyncEngine(private val db: AppDatabase, engineClient: HttpClient) {
             "WeightEntry" -> {
                 val row = json.decodeFromJsonElement(dev.dwm.liftlog.data.db.WeightEntry.serializer(), el)
                 if ((s.weightUpdatedAt(row.id) ?: -1) < row.updatedAt) { s.upsertWeight(row); true } else false
+            }
+            "GroceryItem" -> {
+                val row = json.decodeFromJsonElement(dev.dwm.liftlog.data.db.GroceryItem.serializer(), el)
+                if ((s.groceryUpdatedAt(row.id) ?: -1) < row.updatedAt) { s.upsertGrocery(row); true } else false
             }
             else -> false
         }

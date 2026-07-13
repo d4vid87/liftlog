@@ -42,6 +42,8 @@ fun SettingsScreen(
     var syncUrl by remember { mutableStateOf("") }
     var syncToken by remember { mutableStateOf("") }
     var goal by remember { mutableStateOf("") }
+    var proteinPct by remember { mutableStateOf("30") }
+    var fatPct by remember { mutableStateOf("30") }
     var aiEndpoint by remember { mutableStateOf("") }
     var aiModel by remember { mutableStateOf("") }
     var aiKey by remember { mutableStateOf("") }
@@ -54,6 +56,8 @@ fun SettingsScreen(
         syncUrl = db.settingDao().get("syncUrl") ?: ""
         syncToken = db.settingDao().get("syncToken") ?: ""
         goal = db.settingDao().get("goalKgPerWeek") ?: "0"
+        proteinPct = db.settingDao().get("proteinPct") ?: "30"
+        fatPct = db.settingDao().get("fatPct") ?: "30"
         aiEndpoint = db.settingDao().get("aiEndpoint") ?: ""
         aiModel = db.settingDao().get("aiModel") ?: ""
         aiKey = db.settingDao().get("aiApiKey") ?: ""
@@ -81,6 +85,25 @@ fun SettingsScreen(
                         status = "Goal saved"
                     }
                 }) { Text("Save Goal") }
+            }
+        }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Macro targets (% of calories)", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(proteinPct, { proteinPct = it }, label = { Text("Protein %") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(fatPct, { fatPct = it }, label = { Text("Fat %") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text(
+                    "Carbs = remainder (${(100 - (proteinPct.toIntOrNull() ?: 30) - (fatPct.toIntOrNull() ?: 30)).coerceAtLeast(0)}%)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(onClick = {
+                    scope.launch {
+                        db.settingDao().put(Setting("proteinPct", proteinPct.trim()))
+                        db.settingDao().put(Setting("fatPct", fatPct.trim()))
+                        status = "Macro targets saved"
+                    }
+                }) { Text("Save Macro Targets") }
             }
         }
         Card(Modifier.fillMaxWidth()) {
@@ -177,6 +200,7 @@ private suspend fun exportJson(db: AppDatabase): String {
         put("Food", enc(dev.dwm.liftlog.data.db.Food.serializer(), s.foodsSince(0)))
         put("FoodLog", enc(dev.dwm.liftlog.data.db.FoodLog.serializer(), s.foodLogsSince(0)))
         put("WeightEntry", enc(dev.dwm.liftlog.data.db.WeightEntry.serializer(), s.weightsSince(0)))
+        put("GroceryItem", enc(dev.dwm.liftlog.data.db.GroceryItem.serializer(), s.groceriesSince(0)))
     }
     return json.encodeToString(JsonElement.serializer(), obj)
 }

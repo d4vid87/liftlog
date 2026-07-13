@@ -9,8 +9,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -68,6 +74,20 @@ fun formatDuration(millis: Long): String {
 
 data class PrRecord(val exerciseName: String, val weightKg: Double, val reps: Int)
 
+enum class SetField { WEIGHT, REPS, RPE }
+
+private fun fieldText(s: WorkoutSet, f: SetField): String = when (f) {
+    SetField.WEIGHT -> if (s.weightKg == 0.0) "" else s.weightKg.clean()
+    SetField.REPS -> if (s.reps == 0) "" else "${s.reps}"
+    SetField.RPE -> s.rpe?.clean() ?: ""
+}
+
+private fun applyText(s: WorkoutSet, f: SetField, t: String): WorkoutSet = when (f) {
+    SetField.WEIGHT -> s.copy(weightKg = t.toDoubleOrNull() ?: 0.0)
+    SetField.REPS -> s.copy(reps = t.toIntOrNull() ?: 0)
+    SetField.RPE -> s.copy(rpe = t.toDoubleOrNull())
+}
+
 @Composable
 fun WorkoutTab(db: AppDatabase, modifier: Modifier = Modifier, refreshKey: Int = 0) {
     var activeWorkout by remember { mutableStateOf<Workout?>(null) }
@@ -77,7 +97,11 @@ fun WorkoutTab(db: AppDatabase, modifier: Modifier = Modifier, refreshKey: Int =
 
     val workout = activeWorkout
     if (workout == null) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            RecoveryCard(db)
             Button(
                 onClick = {
                     scope.launch {
@@ -86,6 +110,7 @@ fun WorkoutTab(db: AppDatabase, modifier: Modifier = Modifier, refreshKey: Int =
                         activeWorkout = w
                     }
                 },
+                modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = Palette.Success, contentColor = Color.White),
             ) { Text("Start Empty Workout") }
         }
@@ -110,6 +135,8 @@ fun ActiveWorkoutScreen(
     var showPicker by remember { mutableStateOf(false) }
     var restEndsAt by remember { mutableStateOf<Long?>(null) }
     var summary by remember { mutableStateOf<WorkoutSummary?>(null) }
+    var editing by remember { mutableStateOf<Pair<String, SetField>?>(null) }
+    var fresh by remember { mutableStateOf(true) }
 
     LaunchedEffect(sets) {
         val ids = sets.map { it.exerciseId }.distinct()
@@ -179,6 +206,11 @@ fun ActiveWorkoutScreen(
                     sets = grouped[exerciseId].orEmpty(),
                     previous = previous[exerciseId].orEmpty(),
                     bestE1rm = bestBefore[exerciseId] ?: 0.0,
+                    editing = editing,
+                    onEdit = { setId, field ->
+                        editing = setId to field
+                        fresh = true
+                    },
                     onUpdate = { scope.launch { db.workoutDao().updateSet(it.copy(updatedAt = now())) } },
                     onComplete = { set ->
                         scope.launch { db.workoutDao().updateSet(set.copy(completed = true, updatedAt = now())) }
@@ -214,6 +246,86 @@ fun ActiveWorkoutScreen(
                 }
             }
         }
+        editing?.let { (setId, field) ->
+            val set = sets.find { it.id == setId }
+            if (set == null) {
+                editing = null
+            } else {
+                NumericKeypad(
+                    onKey = { c ->
+                        val cur = if (fresh) "" else fieldText(set, field)
+                        if (c == '.' && (field == SetField.REPS || '.' in cur)) return@NumericKeypad
+                        scope.launch { db.workoutDao().updateSet(applyText(set, field, cur + c).copy(updatedAt = now())) }
+                        fresh = false
+                    },
+                    onBackspace = {
+                        val cur = fieldText(set, field)
+                        scope.launch { db.workoutDao().updateSet(applyText(set, field, cur.dropLast(1)).copy(updatedAt = now())) }
+                        fresh = false
+                    },
+                    onNext = {
+                        editing = when (field) {
+                            SetField.WEIGHT -> setId to SetField.REPS
+                            SetField.REPS -> setId to SetField.RPE
+                            SetField.RPE -> null
+                        }
+                        fresh = true
+                    },
+                    onDone = { editing = null },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NumericKeypad(
+    onKey: (Char) -> Unit,
+    onBackspace: () -> Unit,
+    onNext: () -> Unit,
+    onDone: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        listOf("123", "456", "789").forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { c -> KeypadKey("$c", Modifier.weight(1f)) { onKey(c) } }
+                when (row) {
+                    "123" -> KeypadKey("Next", Modifier.weight(1f), accent = true, onClick = onNext)
+                    "456" -> Box(
+                        Modifier.weight(1f).height(46.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                            .clickable(onClick = onBackspace),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.AutoMirrored.Filled.Backspace, "backspace") }
+                    else -> KeypadKey("Done", Modifier.weight(1f), accent = true, onClick = onDone)
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            KeypadKey(".", Modifier.weight(1f)) { onKey('.') }
+            KeypadKey("0", Modifier.weight(2f)) { onKey('0') }
+            Box(Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun KeypadKey(label: String, modifier: Modifier = Modifier, accent: Boolean = false, onClick: () -> Unit) {
+    Box(
+        modifier.height(46.dp)
+            .background(
+                if (accent) Palette.Calories.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -307,6 +419,8 @@ private fun ExerciseCard(
     sets: List<WorkoutSet>,
     previous: List<WorkoutSet>,
     bestE1rm: Double,
+    editing: Pair<String, SetField>?,
+    onEdit: (String, SetField) -> Unit,
     onUpdate: (WorkoutSet) -> Unit,
     onComplete: (WorkoutSet) -> Unit,
     onDelete: (WorkoutSet) -> Unit,
@@ -335,7 +449,8 @@ private fun ExerciseCard(
                     set = set,
                     previous = previous.getOrNull(i),
                     isPr = set.completed && set.weightKg > 0 && e1rm(set.weightKg, set.reps) > bestE1rm,
-                    onUpdate = onUpdate,
+                    activeField = editing?.takeIf { it.first == set.id }?.second,
+                    onEdit = { field -> onEdit(set.id, field) },
                     onComplete = onComplete,
                     onDelete = onDelete,
                 )
@@ -363,7 +478,8 @@ private fun SetRow(
     set: WorkoutSet,
     previous: WorkoutSet?,
     isPr: Boolean,
-    onUpdate: (WorkoutSet) -> Unit,
+    activeField: SetField?,
+    onEdit: (SetField) -> Unit,
     onComplete: (WorkoutSet) -> Unit,
     onDelete: (WorkoutSet) -> Unit,
 ) {
@@ -386,20 +502,24 @@ private fun SetRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
-        NumField(
-            value = if (set.weightKg == 0.0) "" else set.weightKg.clean(),
+        ValueCell(
+            text = fieldText(set, SetField.WEIGHT),
             placeholder = previous?.weightKg?.clean(),
+            active = activeField == SetField.WEIGHT,
             modifier = Modifier.weight(1f),
-        ) { onUpdate(set.copy(weightKg = it.toDoubleOrNull() ?: 0.0)) }
-        NumField(
-            value = if (set.reps == 0) "" else "${set.reps}",
+        ) { onEdit(SetField.WEIGHT) }
+        ValueCell(
+            text = fieldText(set, SetField.REPS),
             placeholder = previous?.reps?.toString(),
+            active = activeField == SetField.REPS,
             modifier = Modifier.weight(1f),
-        ) { onUpdate(set.copy(reps = it.toIntOrNull() ?: 0)) }
-        NumField(
-            value = set.rpe?.clean() ?: "",
+        ) { onEdit(SetField.REPS) }
+        ValueCell(
+            text = fieldText(set, SetField.RPE),
+            placeholder = null,
+            active = activeField == SetField.RPE,
             modifier = Modifier.weight(0.8f),
-        ) { onUpdate(set.copy(rpe = it.toDoubleOrNull())) }
+        ) { onEdit(SetField.RPE) }
         IconButton(
             onClick = { onComplete(set) },
             enabled = !set.completed,
@@ -421,20 +541,30 @@ private fun SetRow(
 }
 
 @Composable
-private fun NumField(
-    value: String,
+private fun ValueCell(
+    text: String,
+    placeholder: String?,
+    active: Boolean,
     modifier: Modifier = Modifier,
-    placeholder: String? = null,
-    onChange: (String) -> Unit,
+    onClick: () -> Unit,
 ) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onChange,
-        placeholder = placeholder?.let { { Text(it, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center) } },
-        singleLine = true,
-        textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center),
-        modifier = modifier,
-    )
+    Box(
+        modifier.height(40.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+            .then(
+                if (active) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
+                else Modifier
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (text.isNotEmpty()) Text(text, style = MaterialTheme.typography.bodyMedium)
+        else Text(
+            placeholder ?: "",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable

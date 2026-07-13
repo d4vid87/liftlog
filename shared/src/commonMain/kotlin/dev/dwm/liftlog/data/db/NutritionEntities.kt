@@ -46,6 +46,17 @@ data class WeightEntry(
 
 @kotlinx.serialization.Serializable
 @Entity
+data class GroceryItem(
+    @PrimaryKey val id: String = newId(),
+    val name: String,
+    val qty: String = "",
+    val checked: Boolean = false,
+    val updatedAt: Long = nowMillis(),
+    val deletedAt: Long? = null,
+)
+
+@kotlinx.serialization.Serializable
+@Entity
 data class Setting(
     @PrimaryKey val key: String,
     val value: String,

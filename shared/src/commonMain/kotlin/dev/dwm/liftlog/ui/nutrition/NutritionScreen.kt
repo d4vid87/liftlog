@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -44,9 +45,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import dev.dwm.liftlog.ui.Palette
 import dev.dwm.liftlog.data.db.DailyMacro
+import dev.dwm.liftlog.data.db.GroceryItem
 import dev.dwm.liftlog.data.AiClient
 import dev.dwm.liftlog.data.OpenFoodFacts
 import dev.dwm.liftlog.data.ParsedFood
@@ -81,7 +84,8 @@ fun NutritionScreen(
 ) {
     val scope = rememberCoroutineScope()
     val today = remember { todayEpochDay() }
-    val logs by remember { db.foodLogDao().forDay(today) }.collectAsStateList()
+    var day by remember { mutableStateOf(today) }
+    val logs by remember(day) { db.foodLogDao().forDay(day) }.collectAsStateList()
     var foods by remember { mutableStateOf<Map<String, Food>>(emptyMap()) }
     var tdee by remember { mutableStateOf<TdeeResult?>(null) }
     var todayWeight by remember { mutableStateOf<Double?>(null) }
@@ -95,6 +99,10 @@ fun NutritionScreen(
     }
     var week by remember { mutableStateOf<List<DailyMacro>>(emptyList()) }
     var targetKcal by remember { mutableStateOf(2000.0) }
+    var proteinPct by remember { mutableStateOf(30.0) }
+    var fatPct by remember { mutableStateOf(30.0) }
+    var showMicros by remember { mutableStateOf(false) }
+    var showGroceries by remember { mutableStateOf(false) }
     LaunchedEffect(logs, refresh) {
         val goal = db.settingDao().get("goalKgPerWeek")?.toDoubleOrNull() ?: 0.0
         val weights = db.weightDao().all().map { DayWeight(it.epochDay, it.kg) }
@@ -104,13 +112,18 @@ fun NutritionScreen(
         week = db.foodLogDao().dailyMacros(today - 6)
         targetKcal = tdee?.targetKcal
             ?: db.settingDao().get("targetKcal")?.toDoubleOrNull() ?: 2000.0
+        proteinPct = db.settingDao().get("proteinPct")?.toDoubleOrNull() ?: 30.0
+        fatPct = db.settingDao().get("fatPct")?.toDoubleOrNull() ?: 30.0
     }
+
+    if (showMicros) MicrosDialog(logs.mapNotNull { l -> foods[l.foodId]?.let { f -> l.grams to f } }) { showMicros = false }
+    if (showGroceries) GroceriesDialog(db, day) { showGroceries = false }
 
     addingTo?.let { meal ->
         AddFoodDialog(db, off, scanBarcode, onDismiss = { addingTo = null }) { food, grams ->
             scope.launch {
                 db.foodDao().upsert(food)
-                db.foodLogDao().insert(FoodLog(epochDay = today, foodId = food.id, grams = grams, meal = meal))
+                db.foodLogDao().insert(FoodLog(epochDay = day, foodId = food.id, grams = grams, meal = meal))
             }
             addingTo = null
         }
@@ -121,7 +134,7 @@ fun NutritionScreen(
                 parsed.forEach { p ->
                     val food = p.toFood()
                     db.foodDao().upsert(food)
-                    db.foodLogDao().insert(FoodLog(epochDay = today, foodId = food.id, grams = p.grams, meal = meal))
+                    db.foodLogDao().insert(FoodLog(epochDay = day, foodId = food.id, grams = p.grams, meal = meal))
                 }
             }
             aiFor = null
@@ -136,6 +149,36 @@ fun NutritionScreen(
 
     LazyColumn(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { day-- }) { Text("◀") }
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        when (day) {
+                            today -> "Today"
+                            today - 1 -> "Yesterday"
+                            today + 1 -> "Tomorrow"
+                            else -> kotlinx.datetime.LocalDate.fromEpochDays(day.toInt()).toString()
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    if (day != today) {
+                        Text(
+                            if (day > today) "planning" else "history",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                TextButton(onClick = { day++ }) { Text("▶") }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showMicros = true }, modifier = Modifier.weight(1f)) { Text("Micros") }
+                OutlinedButton(onClick = { showGroceries = true }, modifier = Modifier.weight(1f)) { Text("Groceries") }
+                if (day != today) OutlinedButton(onClick = { day = today }, modifier = Modifier.weight(1f)) { Text("Today") }
+            }
+        }
+        item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Calories", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -147,9 +190,10 @@ fun NutritionScreen(
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         CalorieRing(eaten = kcal, target = targetKcal, modifier = Modifier.size(120.dp))
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            MacroBar("Protein", protein, targetKcal * 0.30 / 4, Palette.Protein)
-                            MacroBar("Carbs", carbs, targetKcal * 0.40 / 4, Palette.Carbs)
-                            MacroBar("Fat", fat, targetKcal * 0.30 / 9, Palette.Fat)
+                            val carbsPct = (100.0 - proteinPct - fatPct).coerceAtLeast(0.0)
+                            MacroBar("Protein", protein, targetKcal * proteinPct / 100 / 4, Palette.Protein)
+                            MacroBar("Carbs", carbs, targetKcal * carbsPct / 100 / 4, Palette.Carbs)
+                            MacroBar("Fat", fat, targetKcal * fatPct / 100 / 9, Palette.Fat)
                         }
                     }
                     tdee?.let { t ->
@@ -208,6 +252,121 @@ fun NutritionScreen(
             }
         }
     }
+}
+
+@Composable
+private fun MicrosDialog(entries: List<Pair<Double, Food>>, onDismiss: () -> Unit) {
+    // sum micros across the day's logs; microsJson values are per 100g
+    val totals = remember(entries) {
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val acc = mutableMapOf<String, Double>()
+        for ((grams, food) in entries) {
+            val obj = food.microsJson?.let {
+                runCatching { json.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject }.getOrNull()
+            } ?: continue
+            for ((k, v) in obj) {
+                val amount = (v as? kotlinx.serialization.json.JsonPrimitive)?.content?.toDoubleOrNull() ?: continue
+                acc[k] = (acc[k] ?: 0.0) + amount * grams / 100.0
+            }
+        }
+        acc.toList().sortedBy { it.first }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        title = { Text("Micronutrients — today") },
+        text = {
+            if (totals.isEmpty()) {
+                Text("No micronutrient data. Foods from Open Food Facts carry fiber, sugars, sodium, vitamins…")
+            } else {
+                LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                    items(totals, key = { it.first }) { (name, amount) ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(name.replace('-', ' ').replaceFirstChar { it.uppercase() })
+                            Text(
+                                if (amount < 1.0) "${(amount * 1000).toInt()} mg" else "${amount.clean()} g",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun GroceriesDialog(db: AppDatabase, day: Long, onDismiss: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val items by remember { db.groceryDao().items() }.collectAsStateList()
+    var newItem by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        dismissButton = {
+            TextButton(onClick = { scope.launch { db.groceryDao().clearChecked() } }) { Text("Clear checked") }
+        },
+        title = { Text("Groceries") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newItem,
+                        onValueChange = { newItem = it },
+                        label = { Text("Add item") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = {
+                        scope.launch { db.groceryDao().upsert(GroceryItem(name = newItem.trim())) }
+                        newItem = ""
+                    }, enabled = newItem.isNotBlank()) { Text("Add") }
+                }
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        // aggregate everything planned for the next 7 days into the list
+                        val planned = db.foodLogDao().forRangeOnce(day + 1, day + 7)
+                        val byFood = planned.groupBy { it.foodId }
+                        for ((foodId, logs) in byFood) {
+                            val food = db.foodDao().byId(foodId) ?: continue
+                            db.groceryDao().upsert(
+                                GroceryItem(name = food.name, qty = "${logs.sumOf { it.grams }.clean()} g")
+                            )
+                        }
+                    }
+                }, modifier = Modifier.fillMaxWidth()) { Text("Generate from next 7 days' plan") }
+                if (items.isEmpty()) {
+                    Text(
+                        "Empty. Plan meals on future days (▶ arrow), then generate.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                    items(items, key = { it.id }) { item ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = item.checked,
+                                onCheckedChange = { c ->
+                                    scope.launch { db.groceryDao().upsert(item.copy(checked = c, updatedAt = nowMillis())) }
+                                },
+                            )
+                            Text(
+                                item.name + if (item.qty.isNotBlank()) " (${item.qty})" else "",
+                                Modifier.weight(1f),
+                                textDecoration = if (item.checked) TextDecoration.LineThrough else null,
+                                color = if (item.checked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                            )
+                            IconButton(onClick = { scope.launch { db.groceryDao().delete(item.id) } }) {
+                                Icon(Icons.Default.Delete, "delete", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    )
 }
 
 @Composable
