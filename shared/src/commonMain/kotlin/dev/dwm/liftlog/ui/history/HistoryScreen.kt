@@ -45,6 +45,8 @@ import dev.dwm.liftlog.data.db.E1rmPoint
 import dev.dwm.liftlog.data.db.Exercise
 import dev.dwm.liftlog.data.db.Workout
 import dev.dwm.liftlog.domain.e1rm
+import dev.dwm.liftlog.domain.kgToLb
+import dev.dwm.liftlog.domain.kgToLbDisplay
 import dev.dwm.liftlog.ui.Palette
 import dev.dwm.liftlog.ui.collectAsStateList
 import dev.dwm.liftlog.ui.workout.clean
@@ -123,7 +125,7 @@ private fun WorkoutCard(db: AppDatabase, workout: Workout) {
                     StatChip(Icons.Default.Timer, formatDuration(it - workout.startedAt))
                 }
                 stats?.let { s ->
-                    StatChip(Icons.Default.FitnessCenter, "${s.volumeKg.toInt()} kg")
+                    StatChip(Icons.Default.FitnessCenter, "${s.volumeKg.kgToLb().toInt()} lb")
                     if (s.prCount > 0) StatChip(Icons.Default.EmojiEvents, "${s.prCount} PRs", Palette.Pr)
                 }
             }
@@ -136,7 +138,7 @@ private fun WorkoutCard(db: AppDatabase, workout: Workout) {
                 s.exercises.forEach { ex ->
                     Row(Modifier.fillMaxWidth()) {
                         Text("${ex.setCount} × ${ex.name}", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                        Text("${ex.bestWeightKg.clean()} kg × ${ex.bestReps}", style = MaterialTheme.typography.bodySmall)
+                        Text("${ex.bestWeightKg.kgToLbDisplay().clean()} lb × ${ex.bestReps}", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -250,7 +252,7 @@ private fun ProgressCharts(db: AppDatabase) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text(formatDate(points.first().time), style = MaterialTheme.typography.bodySmall)
                                 Text(
-                                    "best ${points.maxOf { it.e1rm }.clean()}kg",
+                                    "best ${points.maxOf { it.e1rm }.kgToLbDisplay().clean()} lb",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                                 Text(formatDate(points.last().time), style = MaterialTheme.typography.bodySmall)

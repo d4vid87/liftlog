@@ -136,4 +136,28 @@ interface ProgramDao {
     suspend fun dayById(id: String): ProgramDay?
 }
 
+@Dao
+interface RoutineDao {
+    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
+    suspend fun upsert(routine: Routine)
+
+    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
+    suspend fun upsertExercise(re: RoutineExercise)
+
+    @Query("UPDATE Routine SET deletedAt = :now, updatedAt = :now WHERE id = :id")
+    suspend fun delete(id: String, now: Long = nowMillis())
+
+    @Query("UPDATE RoutineExercise SET deletedAt = :now, updatedAt = :now WHERE id = :id")
+    suspend fun deleteExercise(id: String, now: Long = nowMillis())
+
+    @Query("UPDATE RoutineExercise SET deletedAt = :now, updatedAt = :now WHERE routineId = :routineId AND deletedAt IS NULL")
+    suspend fun deleteExercisesFor(routineId: String, now: Long = nowMillis())
+
+    @Query("SELECT * FROM Routine WHERE deletedAt IS NULL ORDER BY position, name")
+    fun routines(): Flow<List<Routine>>
+
+    @Query("SELECT * FROM RoutineExercise WHERE deletedAt IS NULL AND routineId = :routineId ORDER BY position")
+    suspend fun exercisesFor(routineId: String): List<RoutineExercise>
+}
+
 data class E1rmPoint(val time: Long, val e1rm: Double)

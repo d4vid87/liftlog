@@ -1,25 +1,23 @@
 package dev.dwm.liftlog.ui.workout
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -50,17 +48,31 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import dev.dwm.liftlog.data.AiClient
 import dev.dwm.liftlog.data.applyProgression
 import dev.dwm.liftlog.data.db.AppDatabase
 import dev.dwm.liftlog.data.db.Exercise
+import dev.dwm.liftlog.data.db.Program
+import dev.dwm.liftlog.data.db.ProgramDay
+import dev.dwm.liftlog.data.db.Routine
+import dev.dwm.liftlog.data.db.RoutineExercise
 import dev.dwm.liftlog.data.db.Workout
 import dev.dwm.liftlog.data.db.WorkoutSet
 import dev.dwm.liftlog.data.db.nowMillis
+import dev.dwm.liftlog.data.httpClient
+import dev.dwm.liftlog.data.installTemplate
+import dev.dwm.liftlog.data.startProgramWorkout
+import dev.dwm.liftlog.data.startRoutineWorkout
+import dev.dwm.liftlog.data.templates
 import dev.dwm.liftlog.domain.e1rm
+import dev.dwm.liftlog.domain.kgToLb
+import dev.dwm.liftlog.domain.kgToLbDisplay
+import dev.dwm.liftlog.domain.lbToKg
 import dev.dwm.liftlog.domain.platesPerSide
 import dev.dwm.liftlog.ui.Palette
 import dev.dwm.liftlog.ui.collectAsStateList
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 fun now(): Long = nowMillis()
@@ -77,13 +89,13 @@ data class PrRecord(val exerciseName: String, val weightKg: Double, val reps: In
 enum class SetField { WEIGHT, REPS, RPE }
 
 private fun fieldText(s: WorkoutSet, f: SetField): String = when (f) {
-    SetField.WEIGHT -> if (s.weightKg == 0.0) "" else s.weightKg.clean()
+    SetField.WEIGHT -> if (s.weightKg == 0.0) "" else s.weightKg.kgToLbDisplay().clean()
     SetField.REPS -> if (s.reps == 0) "" else "${s.reps}"
     SetField.RPE -> s.rpe?.clean() ?: ""
 }
 
 private fun applyText(s: WorkoutSet, f: SetField, t: String): WorkoutSet = when (f) {
-    SetField.WEIGHT -> s.copy(weightKg = t.toDoubleOrNull() ?: 0.0)
+    SetField.WEIGHT -> s.copy(weightKg = t.toDoubleOrNull()?.lbToKg() ?: 0.0)
     SetField.REPS -> s.copy(reps = t.toIntOrNull() ?: 0)
     SetField.RPE -> s.copy(rpe = t.toDoubleOrNull())
 }
@@ -91,33 +103,313 @@ private fun applyText(s: WorkoutSet, f: SetField, t: String): WorkoutSet = when 
 @Composable
 fun WorkoutTab(db: AppDatabase, modifier: Modifier = Modifier, refreshKey: Int = 0) {
     var activeWorkout by remember { mutableStateOf<Workout?>(null) }
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(refreshKey) { activeWorkout = db.workoutDao().activeWorkout() }
 
     val workout = activeWorkout
     if (workout == null) {
-        Column(
-            modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            RecoveryCard(db)
+        StartScreen(db, modifier) { activeWorkout = it }
+    } else {
+        ActiveWorkoutScreen(db, workout, modifier, onFinished = { activeWorkout = null })
+    }
+}
+
+// ---------- Strong-style start screen: Quick Start / Routines / Programs ----------
+
+@Composable
+private fun StartScreen(db: AppDatabase, modifier: Modifier, onStarted: (Workout) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val routines by remember { db.routineDao().routines() }.collectAsStateList()
+    var editorFor by remember { mutableStateOf<Routine?>(null) }
+    var showEditor by remember { mutableStateOf(false) }
+
+    if (showEditor) {
+        RoutineEditorDialog(db, editorFor) { showEditor = false; editorFor = null }
+    }
+
+    LazyColumn(
+        modifier.fillMaxSize().padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Text("Quick Start", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Button(
                 onClick = {
                     scope.launch {
                         val w = Workout(name = "Workout", startedAt = now())
                         db.workoutDao().insertWorkout(w)
-                        activeWorkout = w
+                        onStarted(w)
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Palette.Success, contentColor = Color.White),
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
             ) { Text("Start Empty Workout") }
         }
-    } else {
-        ActiveWorkoutScreen(db, workout, modifier, onFinished = { activeWorkout = null })
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Routines", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                TextButton(onClick = { editorFor = null; showEditor = true }) { Text("+ New Routine") }
+            }
+            if (routines.isEmpty()) {
+                Text(
+                    "Build your plan: create a routine with your exercises and set counts. " +
+                        "Starting a routine pre-fills your previous weights.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        items(routines, key = { it.id }) { routine ->
+            RoutineCard(
+                db, routine,
+                onStart = { scope.launch { onStarted(startRoutineWorkout(db, routine)) } },
+                onEdit = { editorFor = routine; showEditor = true },
+                onDelete = { scope.launch { db.routineDao().delete(routine.id) } },
+            )
+        }
+        item { ProgramsSection(db, onStarted) }
+        item { RecoveryCard(db) }
     }
 }
+
+@Composable
+private fun RoutineCard(
+    db: AppDatabase,
+    routine: Routine,
+    onStart: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var preview by remember { mutableStateOf("") }
+    LaunchedEffect(routine.id, routine.updatedAt) {
+        val names = db.routineDao().exercisesFor(routine.id)
+            .mapNotNull { db.exerciseDao().byId(it.exerciseId)?.name }
+        preview = names.joinToString(", ")
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(routine.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (preview.isNotBlank()) {
+                Text(
+                    preview,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = onStart) { Text("Start Routine") }
+                TextButton(onClick = onEdit) { Text("Edit") }
+                TextButton(onClick = onDelete) { Text("Delete", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        }
+    }
+}
+
+private data class EditorRow(val exerciseId: String, val name: String, val sets: Int)
+
+@Composable
+private fun RoutineEditorDialog(db: AppDatabase, existing: Routine?, onClose: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var name by remember { mutableStateOf(existing?.name ?: "") }
+    var rows by remember { mutableStateOf<List<EditorRow>>(emptyList()) }
+    var showPicker by remember { mutableStateOf(false) }
+
+    LaunchedEffect(existing?.id) {
+        if (existing != null) {
+            rows = db.routineDao().exercisesFor(existing.id).mapNotNull { re ->
+                db.exerciseDao().byId(re.exerciseId)?.let { EditorRow(re.exerciseId, it.name, re.sets) }
+            }
+        }
+    }
+
+    if (showPicker) {
+        ExercisePickerDialog(db, onDismiss = { showPicker = false }) { exercise ->
+            rows = rows + EditorRow(exercise.id, exercise.name, 3)
+            showPicker = false
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        val routine = existing?.copy(name = name.trim(), updatedAt = nowMillis())
+                            ?: Routine(name = name.trim())
+                        db.routineDao().upsert(routine)
+                        // replace exercise list wholesale — simplest correct sync story
+                        db.routineDao().deleteExercisesFor(routine.id)
+                        rows.forEachIndexed { i, r ->
+                            db.routineDao().upsertExercise(
+                                RoutineExercise(routineId = routine.id, exerciseId = r.exerciseId, position = i, sets = r.sets)
+                            )
+                        }
+                        onClose()
+                    }
+                },
+                enabled = name.isNotBlank() && rows.isNotEmpty(),
+            ) { Text("Save Routine") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
+        title = { Text(if (existing == null) "New Routine" else "Edit Routine") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Routine name (e.g. Push Day)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                rows.forEachIndexed { i, row ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(row.name, Modifier.weight(1f))
+                        TextButton(onClick = {
+                            if (row.sets > 1) rows = rows.toMutableList().also { it[i] = row.copy(sets = row.sets - 1) }
+                        }) { Text("−") }
+                        Text("${row.sets} sets")
+                        TextButton(onClick = {
+                            rows = rows.toMutableList().also { it[i] = row.copy(sets = row.sets + 1) }
+                        }) { Text("+") }
+                        IconButton(onClick = { rows = rows.filterIndexed { j, _ -> j != i } }) {
+                            Icon(Icons.Default.Delete, "remove", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                OutlinedButton(onClick = { showPicker = true }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Add, null)
+                    Text("Add Exercise")
+                }
+            }
+        },
+    )
+}
+
+// ---------- Programs (auto-progression) ----------
+
+@Composable
+private fun ProgramsSection(db: AppDatabase, onStarted: (Workout) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val programs by remember { db.programDao().programs() }.collectAsStateList()
+    var showTemplates by remember { mutableStateOf(false) }
+
+    if (showTemplates) {
+        AlertDialog(
+            onDismissRequest = { showTemplates = false },
+            confirmButton = { TextButton(onClick = { showTemplates = false }) { Text("Cancel") } },
+            title = { Text("Choose Program") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    templates.forEach { template ->
+                        TextButton(onClick = {
+                            scope.launch { installTemplate(db, template) }
+                            showTemplates = false
+                        }, modifier = Modifier.fillMaxWidth()) { Text(template.name) }
+                    }
+                }
+            },
+        )
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Programs", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            TextButton(onClick = { showTemplates = true }) { Text("+ Add Program") }
+        }
+        programs.forEach { program -> ProgramCard(db, program, onStarted) }
+        AiSuggestCard(db)
+    }
+}
+
+@Composable
+private fun ProgramCard(db: AppDatabase, program: Program, onStarted: (Workout) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var days by remember { mutableStateOf<List<ProgramDay>>(emptyList()) }
+    LaunchedEffect(program.id, program.currentDayIndex) { days = db.programDao().daysFor(program.id) }
+    val today = days.getOrNull(program.currentDayIndex % days.size.coerceAtLeast(1))
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(program.name, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Next: ${today?.name ?: "…"} (day ${(program.currentDayIndex % days.size.coerceAtLeast(1)) + 1}/${days.size})",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = {
+                    scope.launch { startProgramWorkout(db, program)?.let(onStarted) }
+                }) { Text("Start ${today?.name ?: "workout"}") }
+                TextButton(onClick = { scope.launch { db.programDao().deleteProgram(program.id) } }) {
+                    Text("Delete")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiSuggestCard(db: AppDatabase) {
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var suggestion by remember { mutableStateOf<String?>(null) }
+
+    suggestion?.let {
+        AlertDialog(
+            onDismissRequest = { suggestion = null },
+            confirmButton = { TextButton(onClick = { suggestion = null }) { Text("Close") } },
+            title = { Text("AI Workout Suggestion") },
+            text = { Text(it) },
+        )
+    }
+
+    OutlinedButton(onClick = {
+        scope.launch {
+            busy = true
+            val endpoint = db.settingDao().get("aiEndpoint").orEmpty()
+            val model = db.settingDao().get("aiModel").orEmpty()
+            suggestion = if (endpoint.isBlank() || model.isBlank()) {
+                "Set AI endpoint + model in the More tab first."
+            } else {
+                val summary = recentTrainingSummary(db)
+                runCatching {
+                    AiClient(httpClient(), endpoint, model, db.settingDao().get("aiApiKey"))
+                        .suggestWorkout(summary)
+                }.getOrElse { "AI request failed: ${it.message}" }
+            }
+            busy = false
+        }
+    }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+        Text(if (busy) "Thinking…" else "AI Suggest Workout")
+    }
+}
+
+private suspend fun recentTrainingSummary(db: AppDatabase): String {
+    val workouts = db.workoutDao().history().first().take(5)
+    if (workouts.isEmpty()) return "No training history yet — suggest a beginner full-body workout."
+    val lines = mutableListOf<String>()
+    for (w in workouts) {
+        val sets = db.workoutDao().setsForWorkoutOnce(w.id).filter { it.completed }
+        val parts = mutableListOf<String>()
+        for ((exerciseId, exSets) in sets.groupBy { it.exerciseId }) {
+            val name = db.exerciseDao().byId(exerciseId)?.name ?: "?"
+            val best = exSets.maxByOrNull { e1rm(it.weightKg, it.reps) }
+            parts.add("$name ${exSets.size}x, best ${best?.weightKg?.kgToLbDisplay()?.clean()} lb x ${best?.reps}")
+        }
+        lines.add("${w.name}: ${parts.joinToString("; ")}")
+    }
+    return lines.joinToString("\n")
+}
+
+// ---------- Active workout (Strong-style, lbs) ----------
 
 @Composable
 fun ActiveWorkoutScreen(
@@ -211,7 +503,6 @@ fun ActiveWorkoutScreen(
                         editing = setId to field
                         fresh = true
                     },
-                    onUpdate = { scope.launch { db.workoutDao().updateSet(it.copy(updatedAt = now())) } },
                     onComplete = { set ->
                         scope.launch { db.workoutDao().updateSet(set.copy(completed = true, updatedAt = now())) }
                         restEndsAt = now() + 90_000
@@ -279,57 +570,6 @@ fun ActiveWorkoutScreen(
 }
 
 @Composable
-private fun NumericKeypad(
-    onKey: (Char) -> Unit,
-    onBackspace: () -> Unit,
-    onNext: () -> Unit,
-    onDone: () -> Unit,
-) {
-    Column(
-        Modifier.fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        listOf("123", "456", "789").forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                row.forEach { c -> KeypadKey("$c", Modifier.weight(1f)) { onKey(c) } }
-                when (row) {
-                    "123" -> KeypadKey("Next", Modifier.weight(1f), accent = true, onClick = onNext)
-                    "456" -> Box(
-                        Modifier.weight(1f).height(46.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-                            .clickable(onClick = onBackspace),
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.AutoMirrored.Filled.Backspace, "backspace") }
-                    else -> KeypadKey("Done", Modifier.weight(1f), accent = true, onClick = onDone)
-                }
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            KeypadKey(".", Modifier.weight(1f)) { onKey('.') }
-            KeypadKey("0", Modifier.weight(2f)) { onKey('0') }
-            Box(Modifier.weight(1f))
-        }
-    }
-}
-
-@Composable
-private fun KeypadKey(label: String, modifier: Modifier = Modifier, accent: Boolean = false, onClick: () -> Unit) {
-    Box(
-        modifier.height(46.dp)
-            .background(
-                if (accent) Palette.Calories.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant,
-                RoundedCornerShape(8.dp),
-            )
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
 private fun WorkoutHeader(workout: Workout, onFinish: () -> Unit, onDiscard: () -> Unit) {
     var elapsed by remember { mutableStateOf(now() - workout.startedAt) }
     LaunchedEffect(workout.id) {
@@ -385,7 +625,7 @@ private fun WorkoutCompleteDialog(s: WorkoutSummary, onDone: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     StatBlock(formatDuration(s.durationMillis), "duration")
-                    StatBlock("${s.volumeKg.toInt()} kg", "volume")
+                    StatBlock("${s.volumeKg.kgToLb().toInt()} lb", "volume")
                     StatBlock("${s.setCount}", "sets")
                 }
                 if (s.prs.isNotEmpty()) {
@@ -395,7 +635,7 @@ private fun WorkoutCompleteDialog(s: WorkoutSummary, onDone: () -> Unit) {
                     }
                     s.prs.forEach {
                         Text(
-                            "${it.exerciseName} — ${it.weightKg.clean()}kg × ${it.reps} (new e1RM record)",
+                            "${it.exerciseName} — ${it.weightKg.kgToLbDisplay().clean()} lb × ${it.reps} (new e1RM record)",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -421,7 +661,6 @@ private fun ExerciseCard(
     bestE1rm: Double,
     editing: Pair<String, SetField>?,
     onEdit: (String, SetField) -> Unit,
-    onUpdate: (WorkoutSet) -> Unit,
     onComplete: (WorkoutSet) -> Unit,
     onDelete: (WorkoutSet) -> Unit,
     onAddSet: (WorkoutSet) -> Unit,
@@ -437,7 +676,7 @@ private fun ExerciseCard(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Set", Modifier.weight(0.5f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("Previous", Modifier.weight(1.1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-                Text("kg", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                Text("lbs", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                 Text("Reps", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                 Text("RPE", Modifier.weight(0.8f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                 Box(Modifier.size(36.dp))
@@ -456,10 +695,14 @@ private fun ExerciseCard(
                 )
             }
             sets.lastOrNull()?.let { last ->
-                val plates = platesPerSide(last.weightKg)
+                val plates = platesPerSide(
+                    last.weightKg.kgToLb(),
+                    barKg = 45.0,
+                    available = listOf(45.0, 35.0, 25.0, 10.0, 5.0, 2.5),
+                )
                 if (!plates.isNullOrEmpty()) {
                     Text(
-                        "Per side: ${plates.joinToString(" + ") { it.clean() }}",
+                        "Per side: ${plates.joinToString(" + ") { it.clean() }} lb",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -496,7 +739,7 @@ private fun SetRow(
             else Text("$index", style = MaterialTheme.typography.labelLarge)
         }
         Text(
-            previous?.let { "${it.weightKg.clean()}×${it.reps}" } ?: "—",
+            previous?.let { "${it.weightKg.kgToLbDisplay().clean()}×${it.reps}" } ?: "—",
             Modifier.weight(1.1f),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -504,7 +747,7 @@ private fun SetRow(
         )
         ValueCell(
             text = fieldText(set, SetField.WEIGHT),
-            placeholder = previous?.weightKg?.clean(),
+            placeholder = previous?.weightKg?.kgToLbDisplay()?.clean(),
             active = activeField == SetField.WEIGHT,
             modifier = Modifier.weight(1f),
         ) { onEdit(SetField.WEIGHT) }
@@ -564,6 +807,57 @@ private fun ValueCell(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun NumericKeypad(
+    onKey: (Char) -> Unit,
+    onBackspace: () -> Unit,
+    onNext: () -> Unit,
+    onDone: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        listOf("123", "456", "789").forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { c -> KeypadKey("$c", Modifier.weight(1f)) { onKey(c) } }
+                when (row) {
+                    "123" -> KeypadKey("Next", Modifier.weight(1f), accent = true, onClick = onNext)
+                    "456" -> Box(
+                        Modifier.weight(1f).height(46.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                            .clickable(onClick = onBackspace),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.AutoMirrored.Filled.Backspace, "backspace") }
+                    else -> KeypadKey("Done", Modifier.weight(1f), accent = true, onClick = onDone)
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            KeypadKey(".", Modifier.weight(1f)) { onKey('.') }
+            KeypadKey("0", Modifier.weight(2f)) { onKey('0') }
+            Box(Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun KeypadKey(label: String, modifier: Modifier = Modifier, accent: Boolean = false, onClick: () -> Unit) {
+    Box(
+        modifier.height(46.dp)
+            .background(
+                if (accent) Palette.Calories.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
     }
 }
 

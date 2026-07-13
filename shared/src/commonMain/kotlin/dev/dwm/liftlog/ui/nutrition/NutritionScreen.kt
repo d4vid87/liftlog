@@ -48,6 +48,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import dev.dwm.liftlog.ui.Palette
+import dev.dwm.liftlog.ui.components.CalorieRing
+import dev.dwm.liftlog.ui.components.MacroBar
 import dev.dwm.liftlog.data.db.DailyMacro
 import dev.dwm.liftlog.data.db.GroceryItem
 import dev.dwm.liftlog.data.AiClient
@@ -60,6 +62,8 @@ import dev.dwm.liftlog.data.db.Food
 import dev.dwm.liftlog.data.db.FoodLog
 import dev.dwm.liftlog.data.db.nowMillis
 import dev.dwm.liftlog.domain.DayIntake
+import dev.dwm.liftlog.domain.kgToLbDisplay
+import dev.dwm.liftlog.domain.lbToKg
 import dev.dwm.liftlog.domain.DayWeight
 import dev.dwm.liftlog.domain.TdeeResult
 import dev.dwm.liftlog.domain.computeTdee
@@ -81,6 +85,7 @@ fun NutritionScreen(
     off: OpenFoodFacts,
     modifier: Modifier = Modifier,
     scanBarcode: (suspend () -> String?)? = null,
+    takePhoto: (suspend () -> String?)? = null,
 ) {
     val scope = rememberCoroutineScope()
     val today = remember { todayEpochDay() }
@@ -129,7 +134,7 @@ fun NutritionScreen(
         }
     }
     aiFor?.let { meal ->
-        AiFoodDialog(db, onDismiss = { aiFor = null }) { parsed ->
+        AiFoodDialog(db, takePhoto, onDismiss = { aiFor = null }) { parsed ->
             scope.launch {
                 parsed.forEach { p ->
                     val food = p.toFood()
@@ -199,7 +204,7 @@ fun NutritionScreen(
                     tdee?.let { t ->
                         Text(
                             "Expenditure ~${t.tdeeKcal.toInt()} kcal · target ${t.targetKcal.toInt()} · " +
-                                "trend ${t.trendWeightKg.clean()}kg (${if (t.weeklyDeltaKg >= 0) "+" else ""}${t.weeklyDeltaKg.clean()}kg/wk)",
+                                "trend ${t.trendWeightKg.kgToLbDisplay().clean()} lb (${if (t.weeklyDeltaKg >= 0) "+" else ""}${t.weeklyDeltaKg.kgToLbDisplay().clean()} lb/wk)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -208,7 +213,8 @@ fun NutritionScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    WeightRow(todayWeight) { kg ->
+                    WeightRow(todayWeight?.kgToLbDisplay()) { lb ->
+                        val kg = lb.lbToKg()
                         scope.launch {
                             db.weightDao().forDay(today)?.let {
                                 db.weightDao().upsert(it.copy(kg = kg, updatedAt = nowMillis()))
@@ -368,56 +374,6 @@ private fun GroceriesDialog(db: AppDatabase, day: Long, onDismiss: () -> Unit) {
         },
     )
 }
-
-@Composable
-private fun CalorieRing(eaten: Double, target: Double, modifier: Modifier = Modifier) {
-    val remaining = (target - eaten).toInt()
-    val track = MaterialTheme.colorScheme.surfaceVariant
-    val fillColor = if (remaining >= 0) Palette.Calories else Palette.Protein
-    Box(modifier, contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxSize()) {
-            val stroke = Stroke(width = 22f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-            val inset = 14f
-            val arcSize = Size(size.width - 2 * inset, size.height - 2 * inset)
-            val topLeft = androidx.compose.ui.geometry.Offset(inset, inset)
-            drawArc(track, -90f, 360f, false, topLeft, arcSize, style = stroke)
-            val sweep = ((eaten / target).coerceIn(0.0, 1.0) * 360).toFloat()
-            drawArc(fillColor, -90f, sweep, false, topLeft, arcSize, style = stroke)
-        }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("$remaining", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(
-                if (remaining >= 0) "Remaining" else "Over",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun MacroBar(label: String, grams: Double, targetGrams: Double, color: Color) {
-    Column {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, style = MaterialTheme.typography.labelMedium)
-            Text(
-                "${grams.toInt()} / ${targetGrams.toInt()} g",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Box(
-            Modifier.fillMaxWidth().height(6.dp)
-                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(3.dp))
-        ) {
-            Box(
-                Modifier.fillMaxWidth((grams / targetGrams).toFloat().coerceIn(0f, 1f))
-                    .height(6.dp).background(color, RoundedCornerShape(3.dp))
-            )
-        }
-    }
-}
-
 @Composable
 private fun WeeklyMacroCard(week: List<DailyMacro>, today: Long, targetKcal: Double) {
     val byDay = week.associateBy { it.epochDay }
@@ -496,7 +452,7 @@ private fun WeightRow(current: Double?, onSave: (Double) -> Unit) {
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
-            label = { Text("Weight kg") },
+            label = { Text("Weight (lb)") },
             singleLine = true,
             modifier = Modifier.weight(1f),
         )
@@ -507,6 +463,7 @@ private fun WeightRow(current: Double?, onSave: (Double) -> Unit) {
 @Composable
 private fun AiFoodDialog(
     db: AppDatabase,
+    takePhoto: (suspend () -> String?)?,
     onDismiss: () -> Unit,
     onLog: (List<ParsedFood>) -> Unit,
 ) {
@@ -515,6 +472,21 @@ private fun AiFoodDialog(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var parsed by remember { mutableStateOf<List<ParsedFood>>(emptyList()) }
+
+    suspend fun runParse(imageB64: String?) {
+        busy = true; error = ""
+        val endpoint = db.settingDao().get("aiEndpoint") ?: ""
+        val model = db.settingDao().get("aiModel") ?: ""
+        if (endpoint.isBlank() || model.isBlank()) {
+            error = "Set AI endpoint + model in More tab"
+        } else {
+            val ai = AiClient(httpClient(), endpoint, model, db.settingDao().get("aiApiKey"))
+            parsed = runCatching { ai.parseFoods(text, imageB64) }
+                .getOrElse { error = it.message ?: "failed"; emptyList() }
+            if (parsed.isEmpty() && error.isBlank()) error = "Nothing parsed"
+        }
+        busy = false
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -533,21 +505,19 @@ private fun AiFoodDialog(
                     label = { Text("Describe your meal (e.g. 2 eggs and toast)") },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Button(onClick = {
-                    scope.launch {
-                        busy = true; error = ""
-                        val endpoint = db.settingDao().get("aiEndpoint") ?: ""
-                        val model = db.settingDao().get("aiModel") ?: ""
-                        if (endpoint.isBlank() || model.isBlank()) {
-                            error = "Set AI endpoint + model in More tab"
-                        } else {
-                            val ai = AiClient(httpClient(), endpoint, model, db.settingDao().get("aiApiKey"))
-                            parsed = runCatching { ai.parseFoods(text) }.getOrElse { error = it.message ?: "failed"; emptyList() }
-                            if (parsed.isEmpty() && error.isBlank()) error = "Nothing parsed"
-                        }
-                        busy = false
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        scope.launch { runParse(null) }
+                    }, enabled = text.isNotBlank() && !busy) { Text("Parse") }
+                    if (takePhoto != null) {
+                        Button(onClick = {
+                            scope.launch {
+                                val photo = takePhoto()
+                                if (photo != null) runParse(photo) else error = "No photo taken"
+                            }
+                        }, enabled = !busy) { Text("Snap Photo") }
                     }
-                }, enabled = text.isNotBlank() && !busy) { Text("Parse") }
+                }
                 if (busy) CircularProgressIndicator()
                 if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
                 parsed.forEach {

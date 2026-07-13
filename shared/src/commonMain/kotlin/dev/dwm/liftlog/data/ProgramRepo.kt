@@ -42,6 +42,31 @@ suspend fun startProgramWorkout(db: AppDatabase, program: Program): Workout? {
     return workout
 }
 
+/**
+ * Strong-style routine start: sets are pre-filled from the exercise's previous
+ * performance (weight/reps as uncompleted suggestions); no previous → empty sets.
+ */
+suspend fun startRoutineWorkout(db: AppDatabase, routine: dev.dwm.liftlog.data.db.Routine): Workout {
+    val workout = Workout(name = routine.name, startedAt = nowMillis())
+    db.workoutDao().insertWorkout(workout)
+    for (re in db.routineDao().exercisesFor(routine.id)) {
+        val previous = db.workoutDao().previousSets(re.exerciseId, workout.id)
+        repeat(re.sets) { i ->
+            val prev = previous.getOrNull(i)
+            db.workoutDao().insertSet(
+                WorkoutSet(
+                    workoutId = workout.id,
+                    exerciseId = re.exerciseId,
+                    setIndex = i,
+                    weightKg = prev?.weightKg ?: 0.0,
+                    reps = prev?.reps ?: 0,
+                )
+            )
+        }
+    }
+    return workout
+}
+
 /** After finishing a program workout: apply progression per exercise, advance the program day pointer. */
 suspend fun applyProgression(db: AppDatabase, workout: Workout) {
     val dayId = workout.programDayId ?: return

@@ -112,6 +112,29 @@ data class ProgramExercise(
     val deletedAt: Long? = null,
 )
 
+/** Strong-style reusable workout template. Weights come from previous performance, not the routine. */
+@kotlinx.serialization.Serializable
+@Entity
+data class Routine(
+    @PrimaryKey val id: String = newId(),
+    val name: String,
+    val position: Int = 0,
+    val updatedAt: Long = nowMillis(),
+    val deletedAt: Long? = null,
+)
+
+@kotlinx.serialization.Serializable
+@Entity(indices = [Index("routineId")])
+data class RoutineExercise(
+    @PrimaryKey val id: String = newId(),
+    val routineId: String,
+    val exerciseId: String,
+    val position: Int,
+    val sets: Int = 3,
+    val updatedAt: Long = nowMillis(),
+    val deletedAt: Long? = null,
+)
+
 object Rules {
     const val LINEAR = "LINEAR"
     const val DOUBLE = "DOUBLE"

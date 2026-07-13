@@ -10,9 +10,9 @@ import androidx.room.RoomDatabaseConstructor
         Exercise::class, Workout::class, WorkoutSet::class,
         Program::class, ProgramDay::class, ProgramExercise::class,
         Food::class, FoodLog::class, WeightEntry::class, Setting::class,
-        GroceryItem::class,
+        GroceryItem::class, Routine::class, RoutineExercise::class,
     ],
-    version = 4,
+    version = 5,
 )
 @ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -24,6 +24,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun weightDao(): WeightDao
     abstract fun settingDao(): SettingDao
     abstract fun groceryDao(): GroceryDao
+    abstract fun routineDao(): RoutineDao
     abstract fun syncDao(): SyncDao
 }
 

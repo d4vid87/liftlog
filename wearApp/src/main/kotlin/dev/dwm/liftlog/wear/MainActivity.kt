@@ -52,7 +52,8 @@ private val quickExercises = listOf("Squat", "Bench Press", "Deadlift", "Overhea
 @Composable
 fun WearApp(sendSet: suspend (String, Double, Int) -> Boolean) {
     var exerciseIndex by remember { mutableIntStateOf(0) }
-    var weight by remember { mutableDoubleStateOf(60.0) }
+    // UI in pounds; payload converted to kg on send (DB stores kg)
+    var weight by remember { mutableDoubleStateOf(135.0) }
     var reps by remember { mutableIntStateOf(5) }
     var restEndsAt by remember { mutableLongStateOf(0L) }
     var nowTick by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -83,9 +84,9 @@ fun WearApp(sendSet: suspend (String, Double, Int) -> Boolean) {
             )
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(onClick = { exerciseIndex = (exerciseIndex + 1) % quickExercises.size }) { Text("↻") }
-                Button(onClick = { weight = (weight - 2.5).coerceAtLeast(0.0) }) { Text("−") }
-                Text("${if (weight % 1.0 == 0.0) weight.toInt() else weight}kg")
-                Button(onClick = { weight += 2.5 }) { Text("+") }
+                Button(onClick = { weight = (weight - 5.0).coerceAtLeast(0.0) }) { Text("−") }
+                Text("${if (weight % 1.0 == 0.0) weight.toInt() else weight} lb")
+                Button(onClick = { weight += 5.0 }) { Text("+") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(onClick = { reps = (reps - 1).coerceAtLeast(1) }) { Text("−") }
@@ -95,7 +96,7 @@ fun WearApp(sendSet: suspend (String, Double, Int) -> Boolean) {
             Button(
                 onClick = {
                     scope.launch(Dispatchers.IO) {
-                        val ok = sendSet(quickExercises[exerciseIndex], weight, reps)
+                        val ok = sendSet(quickExercises[exerciseIndex], weight * 0.45359237, reps)
                         status = if (ok) "Logged ✓" else "No phone"
                         if (ok) restEndsAt = System.currentTimeMillis() + 90_000
                     }

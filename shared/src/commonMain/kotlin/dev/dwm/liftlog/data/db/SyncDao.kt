@@ -38,6 +38,12 @@ interface SyncDao {
     @Query("SELECT * FROM GroceryItem WHERE updatedAt > :since")
     suspend fun groceriesSince(since: Long): List<GroceryItem>
 
+    @Query("SELECT * FROM Routine WHERE updatedAt > :since")
+    suspend fun routinesSince(since: Long): List<Routine>
+
+    @Query("SELECT * FROM RoutineExercise WHERE updatedAt > :since")
+    suspend fun routineExercisesSince(since: Long): List<RoutineExercise>
+
     @Query("SELECT updatedAt FROM Exercise WHERE id = :id")
     suspend fun exerciseUpdatedAt(id: String): Long?
 
@@ -68,8 +74,20 @@ interface SyncDao {
     @Query("SELECT updatedAt FROM GroceryItem WHERE id = :id")
     suspend fun groceryUpdatedAt(id: String): Long?
 
+    @Query("SELECT updatedAt FROM Routine WHERE id = :id")
+    suspend fun routineUpdatedAt(id: String): Long?
+
+    @Query("SELECT updatedAt FROM RoutineExercise WHERE id = :id")
+    suspend fun routineExerciseUpdatedAt(id: String): Long?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertGrocery(row: GroceryItem)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertRoutine(row: Routine)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertRoutineExercise(row: RoutineExercise)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertExercise(row: Exercise)

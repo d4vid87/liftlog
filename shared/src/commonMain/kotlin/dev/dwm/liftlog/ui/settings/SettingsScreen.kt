@@ -55,7 +55,8 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         syncUrl = db.settingDao().get("syncUrl") ?: ""
         syncToken = db.settingDao().get("syncToken") ?: ""
-        goal = db.settingDao().get("goalKgPerWeek") ?: "0"
+        goal = db.settingDao().get("goalKgPerWeek")?.toDoubleOrNull()
+            ?.let { dev.dwm.liftlog.domain.kgToLbStr(it) } ?: "0"
         proteinPct = db.settingDao().get("proteinPct") ?: "30"
         fatPct = db.settingDao().get("fatPct") ?: "30"
         aiEndpoint = db.settingDao().get("aiEndpoint") ?: ""
@@ -75,13 +76,14 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = goal,
                     onValueChange = { goal = it },
-                    label = { Text("Weight change kg/week (- cut, + bulk)") },
+                    label = { Text("Weight change lb/week (- cut, + bulk)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Button(onClick = {
                     scope.launch {
-                        db.settingDao().put(Setting("goalKgPerWeek", goal.trim()))
+                        val kg = goal.trim().toDoubleOrNull()?.let { it * dev.dwm.liftlog.domain.KG_PER_LB } ?: 0.0
+                        db.settingDao().put(Setting("goalKgPerWeek", kg.toString()))
                         status = "Goal saved"
                     }
                 }) { Text("Save Goal") }
@@ -201,6 +203,8 @@ private suspend fun exportJson(db: AppDatabase): String {
         put("FoodLog", enc(dev.dwm.liftlog.data.db.FoodLog.serializer(), s.foodLogsSince(0)))
         put("WeightEntry", enc(dev.dwm.liftlog.data.db.WeightEntry.serializer(), s.weightsSince(0)))
         put("GroceryItem", enc(dev.dwm.liftlog.data.db.GroceryItem.serializer(), s.groceriesSince(0)))
+        put("Routine", enc(dev.dwm.liftlog.data.db.Routine.serializer(), s.routinesSince(0)))
+        put("RoutineExercise", enc(dev.dwm.liftlog.data.db.RoutineExercise.serializer(), s.routineExercisesSince(0)))
     }
     return json.encodeToString(JsonElement.serializer(), obj)
 }
