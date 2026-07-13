@@ -10,7 +10,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -233,7 +236,12 @@ private fun RoutineEditorDialog(db: AppDatabase, existing: Routine?, onClose: ()
     }
 
     AlertDialog(
-        onDismissRequest = onClose,
+        // accidental outside-tap must not eat an in-progress routine
+        onDismissRequest = {},
+        properties = androidx.compose.ui.window.DialogProperties(
+            dismissOnClickOutside = false,
+            dismissOnBackPress = false,
+        ),
         confirmButton = {
             TextButton(
                 onClick = {
@@ -257,7 +265,10 @@ private fun RoutineEditorDialog(db: AppDatabase, existing: Routine?, onClose: ()
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
         title = { Text(if (existing == null) "New Routine" else "Edit Routine") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
