@@ -16,15 +16,20 @@ private data class SeedExercise(
     val equipment: List<String> = emptyList(),
 )
 
+// bump when exercises.json grows: existing installs insert the new names on next launch
+private const val SEED_VERSION = "2"
+
 @OptIn(ExperimentalResourceApi::class)
 suspend fun seedExercisesIfEmpty(db: AppDatabase) {
     val dao = db.exerciseDao()
-    if (dao.count() > 0) return
+    if (db.settingDao().get("exerciseSeedVersion") == SEED_VERSION) return
     val bytes = Res.readBytes("files/exercises.json")
     val seed = Json { ignoreUnknownKeys = true }
         .decodeFromString<List<SeedExercise>>(bytes.decodeToString())
+    val fresh = dao.count() == 0
+    val toInsert = if (fresh) seed else seed.filter { dao.byName(it.name) == null }
     dao.insertAll(
-        seed.map {
+        toInsert.map {
             Exercise(
                 name = it.name,
                 category = it.category,
@@ -33,4 +38,5 @@ suspend fun seedExercisesIfEmpty(db: AppDatabase) {
             )
         }
     )
+    db.settingDao().put(dev.dwm.liftlog.data.db.Setting("exerciseSeedVersion", SEED_VERSION))
 }

@@ -11,15 +11,16 @@ enum class Muscle {
 fun musclesFor(muscles: String, category: String): List<Muscle> {
     val hits = buildList {
         val m = muscles.lowercase()
+        // keywords cover both wger ("trapezius", "quads") and free-exercise-db ("traps", "quadriceps") vocab
         if ("chest" in m || "serratus" in m) add(Muscle.CHEST)
-        if ("lats" in m) add(Muscle.LATS)
-        if ("trapezius" in m) add(Muscle.TRAPS)
+        if ("lats" in m || "middle back" in m) add(Muscle.LATS)
+        if ("trap" in m) add(Muscle.TRAPS)
         if ("shoulders" in m) add(Muscle.SHOULDERS)
         if ("biceps" in m || "brachialis" in m) add(Muscle.BICEPS)
         if ("triceps" in m) add(Muscle.TRICEPS)
-        if ("abs" in m && "abdominis" !in m) add(Muscle.ABS)
+        if (("abs" in m && "abdominis" !in m) || "abdominal" in m) add(Muscle.ABS)
         if ("obliquus" in m) add(Muscle.OBLIQUES)
-        if ("quads" in m) add(Muscle.QUADS)
+        if ("quads" in m || "quadriceps" in m) add(Muscle.QUADS)
         if ("hamstrings" in m) add(Muscle.HAMSTRINGS)
         if ("glutes" in m) add(Muscle.GLUTES)
         if ("calves" in m || "soleus" in m) add(Muscle.CALVES)
