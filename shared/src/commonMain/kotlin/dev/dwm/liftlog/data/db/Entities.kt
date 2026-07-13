@@ -12,6 +12,7 @@ fun newId(): String = Uuid.random().toString()
 
 fun nowMillis(): Long = Clock.System.now().toEpochMilliseconds()
 
+@kotlinx.serialization.Serializable
 @Entity
 data class Exercise(
     @PrimaryKey val id: String = newId(),
@@ -24,6 +25,7 @@ data class Exercise(
     val deletedAt: Long? = null,
 )
 
+@kotlinx.serialization.Serializable
 @Entity
 data class Workout(
     @PrimaryKey val id: String = newId(),
@@ -35,6 +37,7 @@ data class Workout(
     val deletedAt: Long? = null,
 )
 
+@kotlinx.serialization.Serializable
 @Entity(indices = [Index("workoutId"), Index("exerciseId")])
 data class WorkoutSet(
     @PrimaryKey val id: String = newId(),
@@ -51,6 +54,7 @@ data class WorkoutSet(
     val deletedAt: Long? = null,
 )
 
+@kotlinx.serialization.Serializable
 @Entity
 data class Program(
     @PrimaryKey val id: String = newId(),
@@ -61,6 +65,7 @@ data class Program(
     val deletedAt: Long? = null,
 )
 
+@kotlinx.serialization.Serializable
 @Entity(indices = [Index("programId")])
 data class ProgramDay(
     @PrimaryKey val id: String = newId(),
@@ -83,6 +88,7 @@ data class ProgramDay(
  *    {"pct":0.65,"reps":5,"amrap":false}); cycle of cycleLength workouts, then TM
  *    += incrementKg (nSuns-style: bump keyed to AMRAP reps when amrapBump=true).
  */
+@kotlinx.serialization.Serializable
 @Entity(indices = [Index("programDayId")])
 data class ProgramExercise(
     @PrimaryKey val id: String = newId(),

@@ -1,0 +1,38 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew :androidApp:assembleRelease
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: androidApp/build/outputs/apk/release/*.apk
+  desktop:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: desktopApp/build/compose/binaries/main/deb/*.deb
+          - os: windows-latest
+            artifact: desktopApp/build/compose/binaries/main/msi/*.msi
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew :desktopApp:packageDistributionForCurrentOS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}

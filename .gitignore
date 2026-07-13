@@ -6,3 +6,7 @@ local.properties
 .kotlin/
 captures/
 *.keystore
+
+# Local Netlify folder
+.netlify
+node_modules/

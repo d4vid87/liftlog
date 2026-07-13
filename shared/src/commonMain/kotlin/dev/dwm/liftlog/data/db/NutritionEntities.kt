@@ -5,6 +5,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /** Nutrient values are per 100g. microsJson: optional map of extra nutrients per 100g. */
+@kotlinx.serialization.Serializable
 @Entity(indices = [Index("barcode")])
 data class Food(
     @PrimaryKey val id: String = newId(),
@@ -21,6 +22,7 @@ data class Food(
     val deletedAt: Long? = null,
 )
 
+@kotlinx.serialization.Serializable
 @Entity(indices = [Index("epochDay"), Index("foodId")])
 data class FoodLog(
     @PrimaryKey val id: String = newId(),
@@ -32,6 +34,7 @@ data class FoodLog(
     val deletedAt: Long? = null,
 )
 
+@kotlinx.serialization.Serializable
 @Entity(indices = [Index(value = ["epochDay"], unique = true)])
 data class WeightEntry(
     @PrimaryKey val id: String = newId(),
@@ -41,6 +44,7 @@ data class WeightEntry(
     val deletedAt: Long? = null,
 )
 
+@kotlinx.serialization.Serializable
 @Entity
 data class Setting(
     @PrimaryKey val key: String,

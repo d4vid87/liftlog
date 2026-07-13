@@ -29,6 +29,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // ponytail: debug-signed release, fine for sideloading; real keystore if ever distributed
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

@@ -17,14 +17,22 @@ class MainActivity : ComponentActivity() {
         val db = createDatabase(applicationContext)
         val scanner = GmsBarcodeScanning.getClient(this)
         setContent {
-            App(db, scanBarcode = {
-                suspendCancellableCoroutine { cont ->
-                    scanner.startScan()
-                        .addOnSuccessListener { cont.resume(it.rawValue) }
-                        .addOnFailureListener { cont.resume(null) }
-                        .addOnCanceledListener { cont.resume(null) }
-                }
-            })
+            App(
+                db,
+                scanBarcode = {
+                    suspendCancellableCoroutine { cont ->
+                        scanner.startScan()
+                            .addOnSuccessListener { cont.resume(it.rawValue) }
+                            .addOnFailureListener { cont.resume(null) }
+                            .addOnCanceledListener { cont.resume(null) }
+                    }
+                },
+                saveExport = { content ->
+                    val file = java.io.File(getExternalFilesDir(null), "liftlog-export-${System.currentTimeMillis()}.json")
+                    file.writeText(content)
+                    file.absolutePath
+                },
+            )
         }
     }
 }

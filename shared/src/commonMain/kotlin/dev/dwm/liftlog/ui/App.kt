@@ -6,6 +6,7 @@ import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Restaurant
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -29,6 +30,7 @@ import dev.dwm.liftlog.data.seed.seedExercisesIfEmpty
 import dev.dwm.liftlog.ui.history.HistoryScreen
 import dev.dwm.liftlog.ui.nutrition.NutritionScreen
 import dev.dwm.liftlog.ui.programs.ProgramsScreen
+import dev.dwm.liftlog.ui.settings.SettingsScreen
 import dev.dwm.liftlog.ui.workout.WorkoutTab
 
 enum class Tab(val label: String, val icon: ImageVector) {
@@ -36,10 +38,15 @@ enum class Tab(val label: String, val icon: ImageVector) {
     Programs("Programs", Icons.Default.EventNote),
     Nutrition("Food", Icons.Default.Restaurant),
     History("History", Icons.Default.History),
+    Settings("More", Icons.Default.Settings),
 }
 
 @Composable
-fun App(db: AppDatabase, scanBarcode: (suspend () -> String?)? = null) {
+fun App(
+    db: AppDatabase,
+    scanBarcode: (suspend () -> String?)? = null,
+    saveExport: (suspend (String) -> String)? = null,
+) {
     val off = remember { OpenFoodFacts(httpClient()) }
     var tab by remember { mutableStateOf(Tab.Workout) }
     var workoutRefresh by remember { mutableIntStateOf(0) }
@@ -70,6 +77,7 @@ fun App(db: AppDatabase, scanBarcode: (suspend () -> String?)? = null) {
                 }
                 Tab.Nutrition -> NutritionScreen(db, off, modifier, scanBarcode)
                 Tab.History -> HistoryScreen(db, modifier)
+                Tab.Settings -> SettingsScreen(db, modifier, saveExport)
             }
         }
     }

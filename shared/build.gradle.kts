@@ -10,6 +10,7 @@ plugins {
 
 kotlin {
     androidTarget()
+    jvm("desktop")
 
     sourceSets {
         commonMain.dependencies {
@@ -29,6 +30,12 @@ kotlin {
         }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
+        }
+        val desktopMain by getting {
+            dependencies {
+                implementation(libs.ktor.client.cio)
+                implementation(libs.coroutines.swing)
+            }
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
@@ -52,4 +59,5 @@ room {
 
 dependencies {
     add("kspAndroid", libs.room.compiler)
+    add("kspDesktop", libs.room.compiler)
 }

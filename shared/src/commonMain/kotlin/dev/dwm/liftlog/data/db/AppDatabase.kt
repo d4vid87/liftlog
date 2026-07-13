@@ -22,6 +22,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun foodLogDao(): FoodLogDao
     abstract fun weightDao(): WeightDao
     abstract fun settingDao(): SettingDao
+    abstract fun syncDao(): SyncDao
 }
 
 @Suppress("KotlinNoActualForExpect")
