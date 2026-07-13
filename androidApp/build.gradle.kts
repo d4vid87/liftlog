@@ -11,6 +11,7 @@ kotlin {
         androidMain.dependencies {
             implementation(project(":shared"))
             implementation(libs.activity.compose)
+            implementation(libs.barcode.scanner)
         }
     }
 }
