@@ -28,10 +28,13 @@ import androidx.compose.ui.unit.dp
 import dev.dwm.liftlog.data.db.AppDatabase
 import dev.dwm.liftlog.data.db.Program
 import dev.dwm.liftlog.data.db.ProgramDay
+import dev.dwm.liftlog.data.AiClient
+import dev.dwm.liftlog.data.httpClient
 import dev.dwm.liftlog.data.installTemplate
 import dev.dwm.liftlog.data.startProgramWorkout
 import dev.dwm.liftlog.data.templates
 import dev.dwm.liftlog.ui.collectAsStateList
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @Composable
@@ -70,7 +73,61 @@ fun ProgramsScreen(db: AppDatabase, modifier: Modifier = Modifier, onWorkoutStar
                 Text("Add Program")
             }
         }
+        item { AiSuggestCard(db) }
     }
+}
+
+@Composable
+private fun AiSuggestCard(db: AppDatabase) {
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var suggestion by remember { mutableStateOf<String?>(null) }
+
+    suggestion?.let {
+        AlertDialog(
+            onDismissRequest = { suggestion = null },
+            confirmButton = { TextButton(onClick = { suggestion = null }) { Text("Close") } },
+            title = { Text("AI Workout Suggestion") },
+            text = { Text(it) },
+        )
+    }
+
+    OutlinedButton(onClick = {
+        scope.launch {
+            busy = true
+            val endpoint = db.settingDao().get("aiEndpoint").orEmpty()
+            val model = db.settingDao().get("aiModel").orEmpty()
+            suggestion = if (endpoint.isBlank() || model.isBlank()) {
+                "Set AI endpoint + model in the More tab first."
+            } else {
+                val summary = recentTrainingSummary(db)
+                runCatching {
+                    AiClient(httpClient(), endpoint, model, db.settingDao().get("aiApiKey"))
+                        .suggestWorkout(summary)
+                }.getOrElse { "AI request failed: ${it.message}" }
+            }
+            busy = false
+        }
+    }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+        Text(if (busy) "Thinking…" else "AI Suggest Workout")
+    }
+}
+
+private suspend fun recentTrainingSummary(db: AppDatabase): String {
+    val workouts = db.workoutDao().history().first().take(5)
+    if (workouts.isEmpty()) return "No training history yet — suggest a beginner full-body workout."
+    val lines = mutableListOf<String>()
+    for (w in workouts) {
+        val sets = db.workoutDao().setsForWorkoutOnce(w.id).filter { it.completed }
+        val parts = mutableListOf<String>()
+        for ((exerciseId, exSets) in sets.groupBy { it.exerciseId }) {
+            val name = db.exerciseDao().byId(exerciseId)?.name ?: "?"
+            val best = exSets.maxByOrNull { it.weightKg * (1 + it.reps / 30.0) }
+            parts.add("$name ${exSets.size}x, best ${best?.weightKg}kg x ${best?.reps}")
+        }
+        lines.add("${w.name}: ${parts.joinToString("; ")}")
+    }
+    return lines.joinToString("\n")
 }
 
 @Composable

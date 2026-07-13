@@ -42,6 +42,11 @@ fun SettingsScreen(
     var syncUrl by remember { mutableStateOf("") }
     var syncToken by remember { mutableStateOf("") }
     var goal by remember { mutableStateOf("") }
+    var aiEndpoint by remember { mutableStateOf("") }
+    var aiModel by remember { mutableStateOf("") }
+    var aiKey by remember { mutableStateOf("") }
+    var offUser by remember { mutableStateOf("") }
+    var offPass by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
     val engine = remember { SyncEngine(db, httpClient()) }
 
@@ -49,6 +54,11 @@ fun SettingsScreen(
         syncUrl = db.settingDao().get("syncUrl") ?: ""
         syncToken = db.settingDao().get("syncToken") ?: ""
         goal = db.settingDao().get("goalKgPerWeek") ?: "0"
+        aiEndpoint = db.settingDao().get("aiEndpoint") ?: ""
+        aiModel = db.settingDao().get("aiModel") ?: ""
+        aiKey = db.settingDao().get("aiApiKey") ?: ""
+        offUser = db.settingDao().get("offUser") ?: ""
+        offPass = db.settingDao().get("offPassword") ?: ""
     }
 
     Column(
@@ -101,6 +111,36 @@ fun SettingsScreen(
                         }.getOrElse { "Sync failed: ${it.message}" }
                     }
                 }, enabled = syncUrl.isNotBlank() && syncToken.isNotBlank()) { Text("Sync Now") }
+            }
+        }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("AI (OpenAI-compatible: Ollama, OpenRouter…)", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(aiEndpoint, { aiEndpoint = it }, label = { Text("Endpoint (e.g. http://192.168.1.x:11434/v1)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(aiModel, { aiModel = it }, label = { Text("Model (e.g. llama3.1)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(aiKey, { aiKey = it }, label = { Text("API key (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Button(onClick = {
+                    scope.launch {
+                        db.settingDao().put(Setting("aiEndpoint", aiEndpoint.trim()))
+                        db.settingDao().put(Setting("aiModel", aiModel.trim()))
+                        db.settingDao().put(Setting("aiApiKey", aiKey.trim()))
+                        status = "AI settings saved"
+                    }
+                }) { Text("Save AI Settings") }
+            }
+        }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Open Food Facts account (optional, to contribute)", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(offUser, { offUser = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(offPass, { offPass = it }, label = { Text("Password") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Button(onClick = {
+                    scope.launch {
+                        db.settingDao().put(Setting("offUser", offUser.trim()))
+                        db.settingDao().put(Setting("offPassword", offPass))
+                        status = "OFF account saved"
+                    }
+                }) { Text("Save OFF Account") }
             }
         }
         if (saveExport != null) {

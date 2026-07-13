@@ -12,6 +12,7 @@ kotlin {
             implementation(project(":shared"))
             implementation(libs.activity.compose)
             implementation(libs.barcode.scanner)
+            implementation(libs.wearable)
         }
     }
 }

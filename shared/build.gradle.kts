@@ -22,7 +22,7 @@ kotlin {
             implementation(libs.coroutines.core)
             implementation(libs.serialization.json)
             implementation(libs.kotlinx.datetime)
-            implementation(libs.room.runtime)
+            api(libs.room.runtime)
             implementation(libs.sqlite.bundled)
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)

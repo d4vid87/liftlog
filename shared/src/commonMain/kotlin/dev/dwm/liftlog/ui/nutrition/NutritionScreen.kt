@@ -34,7 +34,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.dwm.liftlog.data.AiClient
 import dev.dwm.liftlog.data.OpenFoodFacts
+import dev.dwm.liftlog.data.ParsedFood
+import dev.dwm.liftlog.data.httpClient
+import dev.dwm.liftlog.data.toFood
 import dev.dwm.liftlog.data.db.AppDatabase
 import dev.dwm.liftlog.data.db.Food
 import dev.dwm.liftlog.data.db.FoodLog
@@ -69,6 +73,7 @@ fun NutritionScreen(
     var tdee by remember { mutableStateOf<TdeeResult?>(null) }
     var todayWeight by remember { mutableStateOf<Double?>(null) }
     var addingTo by remember { mutableStateOf<String?>(null) }
+    var aiFor by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableStateOf(0) }
 
     LaunchedEffect(logs) {
@@ -90,6 +95,18 @@ fun NutritionScreen(
                 db.foodLogDao().insert(FoodLog(epochDay = today, foodId = food.id, grams = grams, meal = meal))
             }
             addingTo = null
+        }
+    }
+    aiFor?.let { meal ->
+        AiFoodDialog(db, onDismiss = { aiFor = null }) { parsed ->
+            scope.launch {
+                parsed.forEach { p ->
+                    val food = p.toFood()
+                    db.foodDao().upsert(food)
+                    db.foodLogDao().insert(FoodLog(epochDay = today, foodId = food.id, grams = p.grams, meal = meal))
+                }
+            }
+            aiFor = null
         }
     }
 
@@ -136,7 +153,10 @@ fun NutritionScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(meal, style = MaterialTheme.typography.titleSmall)
-                    TextButton(onClick = { addingTo = meal }) { Text("+ Add") }
+                    Row {
+                        TextButton(onClick = { aiFor = meal }) { Text("AI") }
+                        TextButton(onClick = { addingTo = meal }) { Text("+ Add") }
+                    }
                 }
             }
             items(logs.filter { it.meal == meal }, key = { it.id }) { log ->
@@ -175,6 +195,63 @@ private fun WeightRow(current: Double?, onSave: (Double) -> Unit) {
 }
 
 @Composable
+private fun AiFoodDialog(
+    db: AppDatabase,
+    onDismiss: () -> Unit,
+    onLog: (List<ParsedFood>) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var text by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    var parsed by remember { mutableStateOf<List<ParsedFood>>(emptyList()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = { onLog(parsed) }, enabled = parsed.isNotEmpty()) {
+                Text("Log ${parsed.size} item(s)")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        title = { Text("AI Food Entry") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Describe your meal (e.g. 2 eggs and toast)") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(onClick = {
+                    scope.launch {
+                        busy = true; error = ""
+                        val endpoint = db.settingDao().get("aiEndpoint") ?: ""
+                        val model = db.settingDao().get("aiModel") ?: ""
+                        if (endpoint.isBlank() || model.isBlank()) {
+                            error = "Set AI endpoint + model in More tab"
+                        } else {
+                            val ai = AiClient(httpClient(), endpoint, model, db.settingDao().get("aiApiKey"))
+                            parsed = runCatching { ai.parseFoods(text) }.getOrElse { error = it.message ?: "failed"; emptyList() }
+                            if (parsed.isEmpty() && error.isBlank()) error = "Nothing parsed"
+                        }
+                        busy = false
+                    }
+                }, enabled = text.isNotBlank() && !busy) { Text("Parse") }
+                if (busy) CircularProgressIndicator()
+                if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+                parsed.forEach {
+                    Text(
+                        "${it.name}: ${it.grams.clean()}g, ${it.kcal.toInt()} kcal (P${it.protein.toInt()} C${it.carbs.toInt()} F${it.fat.toInt()})",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+    )
+}
+
+@Composable
 private fun AddFoodDialog(
     db: AppDatabase,
     off: OpenFoodFacts,
@@ -188,6 +265,12 @@ private fun AddFoodDialog(
     var searching by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Food?>(null) }
     var grams by remember { mutableStateOf("100") }
+    var missedBarcode by remember { mutableStateOf<String?>(null) }
+    var newName by remember { mutableStateOf("") }
+    var newKcal by remember { mutableStateOf("") }
+    var newP by remember { mutableStateOf("") }
+    var newC by remember { mutableStateOf("") }
+    var newF by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) { results = db.foodDao().recentFoods() }
 
@@ -233,6 +316,9 @@ private fun AddFoodDialog(
                                 if (food != null) {
                                     results = listOf(food)
                                     selected = food
+                                    missedBarcode = null
+                                } else {
+                                    missedBarcode = code
                                 }
                             }
                             searching = false
@@ -240,6 +326,37 @@ private fun AddFoodDialog(
                     }, modifier = Modifier.fillMaxWidth()) { Text("Scan Barcode") }
                 }
                 if (searching) CircularProgressIndicator()
+                missedBarcode?.let { code ->
+                    Text("Barcode $code not found — create it:", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(newName, { newName = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        OutlinedTextField(newKcal, { newKcal = it }, label = { Text("kcal/100g") }, singleLine = true, modifier = Modifier.weight(1f))
+                        OutlinedTextField(newP, { newP = it }, label = { Text("P") }, singleLine = true, modifier = Modifier.weight(0.6f))
+                        OutlinedTextField(newC, { newC = it }, label = { Text("C") }, singleLine = true, modifier = Modifier.weight(0.6f))
+                        OutlinedTextField(newF, { newF = it }, label = { Text("F") }, singleLine = true, modifier = Modifier.weight(0.6f))
+                    }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            val food = Food(
+                                barcode = code,
+                                name = newName.trim(),
+                                kcal = newKcal.toDoubleOrNull() ?: 0.0,
+                                protein = newP.toDoubleOrNull() ?: 0.0,
+                                carbs = newC.toDoubleOrNull() ?: 0.0,
+                                fat = newF.toDoubleOrNull() ?: 0.0,
+                                custom = true,
+                            )
+                            db.foodDao().upsert(food)
+                            results = listOf(food)
+                            selected = food
+                            missedBarcode = null
+                            // contribute upstream to Open Food Facts if creds configured
+                            val user = db.settingDao().get("offUser").orEmpty()
+                            val pass = db.settingDao().get("offPassword").orEmpty()
+                            if (user.isNotBlank() && pass.isNotBlank()) off.submitProduct(food, user, pass)
+                        }
+                    }, enabled = newName.isNotBlank() && newKcal.isNotBlank()) { Text("Create food") }
+                }
                 LazyColumn(Modifier.heightIn(max = 260.dp)) {
                     items(results, key = { it.id }) { food ->
                         Column(

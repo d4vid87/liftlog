@@ -69,6 +69,24 @@ class OpenFoodFacts(engineClient: HttpClient) {
         }.body<OffSearch>().products.mapNotNull { it.toFood() }
     }.getOrDefault(emptyList())
 
+    /** Contribute a product upstream to Open Food Facts (crowdsourced DB, they moderate). */
+    suspend fun submitProduct(food: Food, user: String, password: String): Boolean = runCatching {
+        val code = food.barcode ?: return false
+        client.get("https://world.openfoodfacts.org/cgi/product_jqm2.pl") {
+            header("User-Agent", "LiftLog/0.1 (personal app)")
+            parameter("code", code)
+            parameter("user_id", user)
+            parameter("password", password)
+            parameter("product_name", food.name)
+            parameter("nutrition_data_per", "100g")
+            parameter("nutriment_energy-kcal", food.kcal)
+            parameter("nutriment_proteins", food.protein)
+            parameter("nutriment_carbohydrates", food.carbs)
+            parameter("nutriment_fat", food.fat)
+        }
+        true
+    }.getOrDefault(false)
+
     suspend fun byBarcode(barcode: String): Food? = runCatching {
         val resp = client.get("https://world.openfoodfacts.org/api/v2/product/$barcode.json") {
             header("User-Agent", "LiftLog/0.1 (personal app)")
