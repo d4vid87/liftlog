@@ -51,7 +51,21 @@ interface FoodLogDao {
            GROUP BY l.epochDay ORDER BY l.epochDay"""
     )
     suspend fun dailyKcals(fromDay: Long): List<DailyKcal>
+
+    @Query(
+        """SELECT l.epochDay AS epochDay,
+                  SUM(l.grams * f.kcal / 100.0) AS kcal,
+                  SUM(l.grams * f.protein / 100.0) AS protein,
+                  SUM(l.grams * f.carbs / 100.0) AS carbs,
+                  SUM(l.grams * f.fat / 100.0) AS fat
+           FROM FoodLog l JOIN Food f ON f.id = l.foodId
+           WHERE l.deletedAt IS NULL AND l.epochDay >= :fromDay
+           GROUP BY l.epochDay ORDER BY l.epochDay"""
+    )
+    suspend fun dailyMacros(fromDay: Long): List<DailyMacro>
 }
+
+data class DailyMacro(val epochDay: Long, val kcal: Double, val protein: Double, val carbs: Double, val fat: Double)
 
 @Dao
 interface WeightDao {

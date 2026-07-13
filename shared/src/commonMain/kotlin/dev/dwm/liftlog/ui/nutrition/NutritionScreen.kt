@@ -1,13 +1,19 @@
 package dev.dwm.liftlog.ui.nutrition
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -33,7 +39,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import dev.dwm.liftlog.ui.Palette
+import dev.dwm.liftlog.data.db.DailyMacro
 import dev.dwm.liftlog.data.AiClient
 import dev.dwm.liftlog.data.OpenFoodFacts
 import dev.dwm.liftlog.data.ParsedFood
@@ -80,12 +93,17 @@ fun NutritionScreen(
         foods = logs.map { it.foodId }.distinct()
             .mapNotNull { db.foodDao().byId(it) }.associateBy { it.id }
     }
+    var week by remember { mutableStateOf<List<DailyMacro>>(emptyList()) }
+    var targetKcal by remember { mutableStateOf(2000.0) }
     LaunchedEffect(logs, refresh) {
         val goal = db.settingDao().get("goalKgPerWeek")?.toDoubleOrNull() ?: 0.0
         val weights = db.weightDao().all().map { DayWeight(it.epochDay, it.kg) }
         val intakes = db.foodLogDao().dailyKcals(today - 35).map { DayIntake(it.epochDay, it.kcal) }
         tdee = computeTdee(weights, intakes, goal)
         todayWeight = db.weightDao().forDay(today)?.kg
+        week = db.foodLogDao().dailyMacros(today - 6)
+        targetKcal = tdee?.targetKcal
+            ?: db.settingDao().get("targetKcal")?.toDoubleOrNull() ?: 2000.0
     }
 
     addingTo?.let { meal ->
@@ -119,12 +137,24 @@ fun NutritionScreen(
     LazyColumn(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Today", style = MaterialTheme.typography.titleMedium)
-                    Text("${kcal.toInt()} kcal   P ${protein.toInt()}g   C ${carbs.toInt()}g   F ${fat.toInt()}g")
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Calories", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Remaining = Target − Food",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        CalorieRing(eaten = kcal, target = targetKcal, modifier = Modifier.size(120.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            MacroBar("Protein", protein, targetKcal * 0.30 / 4, Palette.Protein)
+                            MacroBar("Carbs", carbs, targetKcal * 0.40 / 4, Palette.Carbs)
+                            MacroBar("Fat", fat, targetKcal * 0.30 / 9, Palette.Fat)
+                        }
+                    }
                     tdee?.let { t ->
                         Text(
-                            "TDEE ~${t.tdeeKcal.toInt()} kcal · target ${t.targetKcal.toInt()} · " +
+                            "Expenditure ~${t.tdeeKcal.toInt()} kcal · target ${t.targetKcal.toInt()} · " +
                                 "trend ${t.trendWeightKg.clean()}kg (${if (t.weeklyDeltaKg >= 0) "+" else ""}${t.weeklyDeltaKg.clean()}kg/wk)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -145,6 +175,7 @@ fun NutritionScreen(
                 }
             }
         }
+        item { WeeklyMacroCard(week, today, targetKcal) }
         meals.forEach { meal ->
             item {
                 Row(
@@ -178,6 +209,126 @@ fun NutritionScreen(
         }
     }
 }
+
+@Composable
+private fun CalorieRing(eaten: Double, target: Double, modifier: Modifier = Modifier) {
+    val remaining = (target - eaten).toInt()
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    val fillColor = if (remaining >= 0) Palette.Calories else Palette.Protein
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val stroke = Stroke(width = 22f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            val inset = 14f
+            val arcSize = Size(size.width - 2 * inset, size.height - 2 * inset)
+            val topLeft = androidx.compose.ui.geometry.Offset(inset, inset)
+            drawArc(track, -90f, 360f, false, topLeft, arcSize, style = stroke)
+            val sweep = ((eaten / target).coerceIn(0.0, 1.0) * 360).toFloat()
+            drawArc(fillColor, -90f, sweep, false, topLeft, arcSize, style = stroke)
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("$remaining", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                if (remaining >= 0) "Remaining" else "Over",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MacroBar(label: String, grams: Double, targetGrams: Double, color: Color) {
+    Column {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+            Text(
+                "${grams.toInt()} / ${targetGrams.toInt()} g",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Box(
+            Modifier.fillMaxWidth().height(6.dp)
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(3.dp))
+        ) {
+            Box(
+                Modifier.fillMaxWidth((grams / targetGrams).toFloat().coerceIn(0f, 1f))
+                    .height(6.dp).background(color, RoundedCornerShape(3.dp))
+            )
+        }
+    }
+}
+
+@Composable
+private fun WeeklyMacroCard(week: List<DailyMacro>, today: Long, targetKcal: Double) {
+    val byDay = week.associateBy { it.epochDay }
+    val days = (today - 6..today).toList()
+    val maxKcal = maxOf(targetKcal, week.maxOfOrNull { it.kcal } ?: 0.0)
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Calorie Distribution", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "Last 7 days · protein / fat / carbs",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                Modifier.fillMaxWidth().height(140.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                days.forEach { day ->
+                    val m = byDay[day]
+                    Column(Modifier.weight(1f).height(140.dp), verticalArrangement = Arrangement.Bottom) {
+                        if (m != null && m.kcal > 0) {
+                            val pK = (m.protein * 4).toFloat()
+                            val fK = (m.fat * 9).toFloat()
+                            val cK = (m.carbs * 4).toFloat()
+                            val total = (pK + fK + cK).coerceAtLeast(1f)
+                            val frac = (m.kcal / maxKcal).toFloat().coerceIn(0.05f, 1f)
+                            StackedBar(
+                                Modifier.fillMaxWidth().height(140.dp * frac),
+                                pFrac = pK / total, fFrac = fK / total, cFrac = cK / total,
+                            )
+                        }
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                days.forEach { day ->
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            byDay[day]?.kcal?.toInt()?.toString() ?: "—",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Palette.Calories,
+                            textAlign = TextAlign.Center,
+                        )
+                        Text(
+                            dayLetter(day),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// stacked bar: protein on top, fat middle, carbs bottom (MacroFactor style)
+@Composable
+private fun StackedBar(modifier: Modifier, pFrac: Float, fFrac: Float, cFrac: Float) {
+    Column(modifier, verticalArrangement = Arrangement.Bottom) {
+        Box(Modifier.fillMaxWidth().weight(pFrac.coerceAtLeast(0.01f)).background(Palette.Protein, RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)))
+        Box(Modifier.fillMaxWidth().weight(fFrac.coerceAtLeast(0.01f)).background(Palette.Fat))
+        Box(Modifier.fillMaxWidth().weight(cFrac.coerceAtLeast(0.01f)).background(Palette.Carbs))
+    }
+}
+
+private fun dayLetter(epochDay: Long): String =
+    when ((epochDay + 3).mod(7L)) { // epoch day 0 = Thursday; +3 aligns Monday=0
+        0L -> "M"; 1L -> "T"; 2L -> "W"; 3L -> "T"; 4L -> "F"; 5L -> "S"; else -> "S"
+    }
 
 @Composable
 private fun WeightRow(current: Double?, onSave: (Double) -> Unit) {

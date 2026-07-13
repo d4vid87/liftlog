@@ -82,6 +82,15 @@ interface WorkoutDao {
     suspend fun e1rmHistory(exerciseId: String): List<E1rmPoint>
 
     @Query(
+        """SELECT MAX(s.weightKg * (1 + s.reps / 30.0))
+           FROM WorkoutSet s JOIN Workout w ON w.id = s.workoutId
+           WHERE s.exerciseId = :exerciseId AND s.completed
+             AND w.startedAt < :before AND w.finishedAt IS NOT NULL
+             AND s.deletedAt IS NULL AND w.deletedAt IS NULL"""
+    )
+    suspend fun bestE1rmBefore(exerciseId: String, before: Long): Double?
+
+    @Query(
         """SELECT DISTINCT e.* FROM Exercise e
            JOIN WorkoutSet s ON s.exerciseId = e.id
            JOIN Workout w ON w.id = s.workoutId
