@@ -13,6 +13,8 @@ object Palette {
     val Carbs = Color(0xFFB5E655)
     val Calories = Color(0xFF4D9FFF)
     val Pr = Color(0xFFFFD54F)
+    val Boost = Color(0xFFFF6B4A)  // Boostcamp coral — workout accents
+    val Trend = Color(0xFF9B8CFF)  // MacroFactor purple — trend lines
 }
 
 private val Scheme = darkColorScheme(

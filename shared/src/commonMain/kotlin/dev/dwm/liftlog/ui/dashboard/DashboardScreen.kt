@@ -1,6 +1,9 @@
 package dev.dwm.liftlog.ui.dashboard
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +65,7 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
     var proteinPct by remember { mutableStateOf(30.0) }
     var fatPct by remember { mutableStateOf(30.0) }
     var weights by remember { mutableStateOf<List<WeightEntry>>(emptyList()) }
+    var intakes by remember { mutableStateOf<List<DayIntake>>(emptyList()) }
     var fabOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(logs) {
@@ -77,9 +81,13 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
 
         val goal = db.settingDao().get("goalKgPerWeek")?.toDoubleOrNull() ?: 0.0
         val allWeights = db.weightDao().all()
-        weights = allWeights.filter { it.epochDay >= today - 90 }
-        val intakes = db.foodLogDao().dailyKcals(today - 35).map { DayIntake(it.epochDay, it.kcal) }
-        tdee = computeTdee(allWeights.map { DayWeight(it.epochDay, it.kg) }, intakes, goal)
+        weights = allWeights
+        intakes = db.foodLogDao().dailyKcals(today - 365).map { DayIntake(it.epochDay, it.kcal) }
+        tdee = computeTdee(
+            allWeights.map { DayWeight(it.epochDay, it.kg) },
+            intakes.filter { it.epochDay >= today - 35 },
+            goal,
+        )
         targetKcal = tdee?.targetKcal ?: db.settingDao().get("targetKcal")?.toDoubleOrNull() ?: 2000.0
         proteinPct = db.settingDao().get("proteinPct")?.toDoubleOrNull() ?: 30.0
         fatPct = db.settingDao().get("fatPct")?.toDoubleOrNull() ?: 30.0
@@ -118,36 +126,8 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
                     MacroBar("Fat", fat, targetKcal * fatPct / 100 / 9, Palette.Fat)
                 }
             }
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Weight", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        weights.lastOrNull()?.let {
-                            Text(
-                                "${it.kg.kgToLbDisplay().clean()} lb",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = Palette.Calories,
-                            )
-                        }
-                    }
-                    Text(
-                        "Last 90 days" + (tdee?.let {
-                            " · trend ${it.trendWeightKg.kgToLbDisplay().clean()} lb"
-                        } ?: ""),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (weights.size >= 2) {
-                        WeightChart(weights, Modifier.fillMaxWidth().height(120.dp))
-                    } else {
-                        Text(
-                            "Log weight on the Food tab to see your trend.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
+            WeightTrendCard(weights, today)
+            ExpenditureCard(intakes, tdee, today)
         }
         Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
             FloatingActionButton(onClick = { fabOpen = true }, containerColor = Palette.Calories) {
@@ -171,23 +151,160 @@ private fun LabeledValue(label: String, value: String) {
     }
 }
 
+// range chips shared by the MacroFactor-style trend cards
+private val ranges = listOf("1W" to 7L, "1M" to 30L, "3M" to 91L, "6M" to 182L, "1Y" to 365L, "All" to 100_000L)
+
 @Composable
-private fun WeightChart(entries: List<WeightEntry>, modifier: Modifier) {
-    val color = Palette.Calories
+private fun RangeChips(selected: Long, onSelect: (Long) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        ranges.forEach { (label, days) ->
+            val on = days == selected
+            Box(
+                Modifier.weight(1f)
+                    .background(
+                        if (on) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surfaceVariant,
+                        RoundedCornerShape(16.dp),
+                    )
+                    .clickable { onSelect(days) }
+                    .padding(vertical = 6.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (on) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AvgDiffHeader(title: String, avg: String, diff: String, unit: String) {
+    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+        Column {
+            Text("Average", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(avg, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(unit, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Column {
+            Text("Difference", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(diff, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(unit, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WeightTrendCard(all: List<WeightEntry>, today: Long) {
+    var range by remember { mutableStateOf(91L) }
+    val entries = all.filter { it.epochDay >= today - range }
+    // MacroFactor: faint scale-weight line + bold purple EMA trend
+    val trend = remember(entries) {
+        var ema = entries.firstOrNull()?.kg ?: 0.0
+        entries.map { e -> ema += 0.25 * (e.kg - ema); DayWeight(e.epochDay, ema) }
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            AvgDiffHeader(
+                "Weight Trend",
+                avg = if (entries.isEmpty()) "—" else entries.map { it.kg }.average().kgToLbDisplay().clean(),
+                diff = trend.let {
+                    if (it.size < 2) "—" else {
+                        val d = (it.last().kg - it.first().kg).kgToLbDisplay()
+                        "${if (d > 0) "+" else ""}${d.clean()}"
+                    }
+                },
+                unit = "lbs",
+            )
+            if (entries.size >= 2) {
+                TrendChart(
+                    Modifier.fillMaxWidth().height(140.dp),
+                    series = listOf(
+                        Series(entries.map { it.epochDay to it.kg }, Palette.Trend.copy(alpha = 0.45f), dots = true),
+                        Series(trend.map { it.epochDay to it.kg }, Palette.Trend),
+                    ),
+                )
+            } else {
+                Text(
+                    "Log weight on the Food tab to see your trend.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            RangeChips(range) { range = it }
+        }
+    }
+}
+
+@Composable
+private fun ExpenditureCard(all: List<DayIntake>, tdee: TdeeResult?, today: Long) {
+    var range by remember { mutableStateOf(30L) }
+    val entries = all.filter { it.epochDay >= today - range && it.kcal > 0 }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            AvgDiffHeader(
+                "Expenditure",
+                avg = tdee?.tdeeKcal?.toInt()?.toString() ?: "—",
+                diff = if (tdee == null || entries.isEmpty()) "—" else {
+                    val d = (entries.map { it.kcal }.average() - tdee.tdeeKcal).toInt()
+                    "${if (d > 0) "+" else ""}$d"
+                },
+                unit = "kcal",
+            )
+            if (entries.size >= 2) {
+                TrendChart(
+                    Modifier.fillMaxWidth().height(140.dp),
+                    series = listOfNotNull(
+                        Series(entries.map { it.epochDay to it.kcal }, Palette.Protein.copy(alpha = 0.6f), dots = true),
+                        tdee?.let {
+                            Series(
+                                listOf(entries.first().epochDay to it.tdeeKcal, entries.last().epochDay to it.tdeeKcal),
+                                Palette.Protein,
+                            )
+                        },
+                    ),
+                )
+            } else {
+                Text(
+                    "Log food for a few days to see expenditure vs intake.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            RangeChips(range) { range = it }
+        }
+    }
+}
+
+private data class Series(val points: List<Pair<Long, Double>>, val color: androidx.compose.ui.graphics.Color, val dots: Boolean = false)
+
+@Composable
+private fun TrendChart(modifier: Modifier, series: List<Series>) {
+    val pts = series.flatMap { it.points }
+    if (pts.isEmpty()) return
+    val minD = pts.minOf { it.first }
+    val maxD = pts.maxOf { it.first }
+    val minV = pts.minOf { it.second }
+    val maxV = pts.maxOf { it.second }
     Canvas(modifier) {
-        val minD = entries.first().epochDay
-        val maxD = entries.last().epochDay
-        val minV = entries.minOf { it.kg }
-        val maxV = entries.maxOf { it.kg }
         val spanD = (maxD - minD).coerceAtLeast(1)
         val spanV = (maxV - minV).coerceAtLeast(0.5)
-        val offsets = entries.map {
-            Offset(
-                x = (it.epochDay - minD) / spanD.toFloat() * size.width,
-                y = size.height - ((it.kg - minV) / spanV).toFloat() * size.height * 0.85f - size.height * 0.075f,
-            )
+        for (s in series) {
+            val offsets = s.points.map {
+                Offset(
+                    x = (it.first - minD) / spanD.toFloat() * size.width,
+                    y = size.height - ((it.second - minV) / spanV).toFloat() * size.height * 0.85f - size.height * 0.075f,
+                )
+            }
+            offsets.zipWithNext { a, b -> drawLine(s.color, a, b, strokeWidth = 4f, cap = StrokeCap.Round) }
+            if (s.dots) offsets.forEach { drawCircle(s.color, radius = 5f, center = it) }
         }
-        offsets.zipWithNext { a, b -> drawLine(color, a, b, strokeWidth = 4f, cap = StrokeCap.Round) }
-        offsets.forEach { drawCircle(color, radius = 5f, center = it) }
     }
 }

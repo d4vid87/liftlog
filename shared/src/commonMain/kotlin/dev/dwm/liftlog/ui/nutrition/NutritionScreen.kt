@@ -95,7 +95,6 @@ fun NutritionScreen(
     var tdee by remember { mutableStateOf<TdeeResult?>(null) }
     var todayWeight by remember { mutableStateOf<Double?>(null) }
     var addingTo by remember { mutableStateOf<String?>(null) }
-    var aiFor by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableStateOf(0) }
 
     LaunchedEffect(logs) {
@@ -125,25 +124,27 @@ fun NutritionScreen(
     if (showGroceries) GroceriesDialog(db, day) { showGroceries = false }
 
     addingTo?.let { meal ->
-        AddFoodDialog(db, off, scanBarcode, onDismiss = { addingTo = null }) { food, grams ->
-            scope.launch {
-                db.foodDao().upsert(food)
-                db.foodLogDao().insert(FoodLog(epochDay = day, foodId = food.id, grams = grams, meal = meal))
-            }
-            addingTo = null
-        }
-    }
-    aiFor?.let { meal ->
-        AiFoodDialog(db, takePhoto, onDismiss = { aiFor = null }) { parsed ->
-            scope.launch {
-                parsed.forEach { p ->
-                    val food = p.toFood()
+        LogFoodsDialog(
+            db, off, scanBarcode, takePhoto,
+            onDismiss = { addingTo = null },
+            onAdd = { food, grams ->
+                scope.launch {
                     db.foodDao().upsert(food)
-                    db.foodLogDao().insert(FoodLog(epochDay = day, foodId = food.id, grams = p.grams, meal = meal))
+                    db.foodLogDao().insert(FoodLog(epochDay = day, foodId = food.id, grams = grams, meal = meal))
                 }
-            }
-            aiFor = null
-        }
+                addingTo = null
+            },
+            onLogParsed = { parsed ->
+                scope.launch {
+                    parsed.forEach { p ->
+                        val food = p.toFood()
+                        db.foodDao().upsert(food)
+                        db.foodLogDao().insert(FoodLog(epochDay = day, foodId = food.id, grams = p.grams, meal = meal))
+                    }
+                }
+                addingTo = null
+            },
+        )
     }
 
     val totals = logs.mapNotNull { l -> foods[l.foodId]?.let { f -> l.grams to f } }
@@ -229,25 +230,34 @@ fun NutritionScreen(
         meals.forEach { meal ->
             item {
                 Row(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(meal, style = MaterialTheme.typography.titleSmall)
-                    Row {
-                        TextButton(onClick = { aiFor = meal }) { Text("AI") }
-                        TextButton(onClick = { addingTo = meal }) { Text("+ Add") }
+                    Text(meal, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    TextButton(onClick = { addingTo = meal }) {
+                        Text("Log Foods", color = Palette.Trend, fontWeight = FontWeight.Bold)
                     }
                 }
             }
             items(logs.filter { it.meal == meal }, key = { it.id }) { log ->
                 val food = foods[log.foodId]
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    FoodCircle(food?.name ?: "?")
                     Column(Modifier.weight(1f)) {
-                        Text(food?.name ?: "…")
+                        Text(food?.name ?: "…", style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            "${log.grams.clean()}g · ${((food?.kcal ?: 0.0) * log.grams / 100).toInt()} kcal",
+                            food?.let { macroLine(it, log.grams) } ?: "",
                             style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "${log.grams.clean()} grams",
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -257,6 +267,35 @@ fun NutritionScreen(
                 }
             }
         }
+    }
+}
+
+// MacroFactor-style summary: "204 Cal · 33P · 7F · 25C" for the given portion
+private fun macroLine(food: Food, grams: Double): String {
+    val k = (food.kcal * grams / 100).toInt()
+    val p = (food.protein * grams / 100).toInt()
+    val f = (food.fat * grams / 100).toInt()
+    val c = (food.carbs * grams / 100).toInt()
+    return "$k Cal · ${p}P · ${f}F · ${c}C"
+}
+
+private val circleColors = listOf(
+    Palette.Protein, Palette.Carbs, Palette.Fat, Palette.Calories, Palette.Trend, Palette.Success,
+)
+
+@Composable
+private fun FoodCircle(name: String) {
+    val color = circleColors[(name.hashCode().mod(circleColors.size))]
+    Box(
+        Modifier.size(38.dp).background(color.copy(alpha = 0.2f), androidx.compose.foundation.shape.CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            name.trim().take(1).uppercase(),
+            color = color,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleMedium,
+        )
     }
 }
 
@@ -460,11 +499,199 @@ private fun WeightRow(current: Double?, onSave: (Double) -> Unit) {
     }
 }
 
+// MacroFactor-style unified log sheet: Scan / Search / AI / Quick Add tabs
 @Composable
-private fun AiFoodDialog(
+private fun LogFoodsDialog(
     db: AppDatabase,
+    off: OpenFoodFacts,
+    scanBarcode: (suspend () -> String?)?,
     takePhoto: (suspend () -> String?)?,
     onDismiss: () -> Unit,
+    onAdd: (Food, Double) -> Unit,
+    onLogParsed: (List<ParsedFood>) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val tabs = buildList {
+        if (scanBarcode != null) add("Scan")
+        add("Search"); add("AI"); add("Quick Add")
+    }
+    var tab by remember { mutableStateOf("Search") }
+    var grams by remember { mutableStateOf("100") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        title = { Text("Log Foods") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    tabs.forEach { t ->
+                        FilterChip(selected = tab == t, onClick = { tab = t }, label = { Text(t) })
+                    }
+                }
+                when (tab) {
+                    "Scan" -> ScanTab(db, off, scanBarcode!!, grams, { grams = it }, onAdd)
+                    "Search" -> SearchTab(db, off, grams, { grams = it }, onAdd)
+                    "AI" -> AiTab(db, takePhoto, onLogParsed)
+                    "Quick Add" -> QuickAddTab(onAdd)
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun GramsField(grams: String, onGrams: (String) -> Unit) {
+    OutlinedTextField(
+        value = grams,
+        onValueChange = onGrams,
+        label = { Text("Grams") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
+private fun FoodResultRow(food: Food, onPlus: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        FoodCircle(food.name)
+        Column(Modifier.weight(1f)) {
+            Text(food.name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                (food.brand.takeIf { it.isNotBlank() }?.let { "$it · " } ?: "") + macroLine(food, 100.0) + " /100g",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Box(
+            Modifier.size(32.dp)
+                .background(Palette.Trend.copy(alpha = 0.2f), androidx.compose.foundation.shape.CircleShape)
+                .clickable(onClick = onPlus),
+            contentAlignment = Alignment.Center,
+        ) { Text("+", color = Palette.Trend, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
+    }
+}
+
+@Composable
+private fun SearchTab(
+    db: AppDatabase,
+    off: OpenFoodFacts,
+    grams: String,
+    onGrams: (String) -> Unit,
+    onAdd: (Food, Double) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<Food>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { results = db.foodDao().recentFoods() }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("Search for a food") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedButton(onClick = {
+                scope.launch {
+                    searching = true
+                    val local = db.foodDao().search(query)
+                    results = local + off.search(query).filter { remote ->
+                        local.none { it.barcode != null && it.barcode == remote.barcode }
+                    }
+                    searching = false
+                }
+            }) { Text("Go") }
+        }
+        GramsField(grams, onGrams)
+        if (searching) CircularProgressIndicator()
+        LazyColumn(Modifier.heightIn(max = 280.dp)) {
+            items(results, key = { it.id }) { food ->
+                FoodResultRow(food) { onAdd(food, grams.toDoubleOrNull() ?: 100.0) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScanTab(
+    db: AppDatabase,
+    off: OpenFoodFacts,
+    scanBarcode: suspend () -> String?,
+    grams: String,
+    onGrams: (String) -> Unit,
+    onAdd: (Food, Double) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var searching by remember { mutableStateOf(false) }
+    var found by remember { mutableStateOf<Food?>(null) }
+    var missedBarcode by remember { mutableStateOf<String?>(null) }
+    var newName by remember { mutableStateOf("") }
+    var newKcal by remember { mutableStateOf("") }
+    var newP by remember { mutableStateOf("") }
+    var newC by remember { mutableStateOf("") }
+    var newF by remember { mutableStateOf("") }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = {
+            scope.launch {
+                searching = true
+                val code = scanBarcode()
+                if (code != null) {
+                    val food = db.foodDao().byBarcode(code) ?: off.byBarcode(code)
+                    if (food != null) { found = food; missedBarcode = null } else missedBarcode = code
+                }
+                searching = false
+            }
+        }, modifier = Modifier.fillMaxWidth()) { Text("Scan Barcode") }
+        GramsField(grams, onGrams)
+        if (searching) CircularProgressIndicator()
+        found?.let { food -> FoodResultRow(food) { onAdd(food, grams.toDoubleOrNull() ?: 100.0) } }
+        missedBarcode?.let { code ->
+            Text("Barcode $code not found — create it:", style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(newName, { newName = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                OutlinedTextField(newKcal, { newKcal = it }, label = { Text("kcal/100g") }, singleLine = true, modifier = Modifier.weight(1f))
+                OutlinedTextField(newP, { newP = it }, label = { Text("P") }, singleLine = true, modifier = Modifier.weight(0.6f))
+                OutlinedTextField(newC, { newC = it }, label = { Text("C") }, singleLine = true, modifier = Modifier.weight(0.6f))
+                OutlinedTextField(newF, { newF = it }, label = { Text("F") }, singleLine = true, modifier = Modifier.weight(0.6f))
+            }
+            OutlinedButton(onClick = {
+                scope.launch {
+                    val food = Food(
+                        barcode = code,
+                        name = newName.trim(),
+                        kcal = newKcal.toDoubleOrNull() ?: 0.0,
+                        protein = newP.toDoubleOrNull() ?: 0.0,
+                        carbs = newC.toDoubleOrNull() ?: 0.0,
+                        fat = newF.toDoubleOrNull() ?: 0.0,
+                        custom = true,
+                    )
+                    db.foodDao().upsert(food)
+                    found = food
+                    missedBarcode = null
+                    // contribute upstream to Open Food Facts if creds configured
+                    val user = db.settingDao().get("offUser").orEmpty()
+                    val pass = db.settingDao().get("offPassword").orEmpty()
+                    if (user.isNotBlank() && pass.isNotBlank()) off.submitProduct(food, user, pass)
+                }
+            }, enabled = newName.isNotBlank() && newKcal.isNotBlank()) { Text("Create food") }
+        }
+    }
+}
+
+@Composable
+private fun AiTab(
+    db: AppDatabase,
+    takePhoto: (suspend () -> String?)?,
     onLog: (List<ParsedFood>) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -488,180 +715,76 @@ private fun AiFoodDialog(
         busy = false
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = { onLog(parsed) }, enabled = parsed.isNotEmpty()) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            label = { Text("Describe your meal (e.g. 2 eggs and toast)") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                scope.launch { runParse(null) }
+            }, enabled = text.isNotBlank() && !busy) { Text("Parse") }
+            if (takePhoto != null) {
+                Button(onClick = {
+                    scope.launch {
+                        val photo = takePhoto()
+                        if (photo != null) runParse(photo) else error = "No photo taken"
+                    }
+                }, enabled = !busy) { Text("Snap Photo") }
+            }
+        }
+        if (busy) CircularProgressIndicator()
+        if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+        parsed.forEach {
+            Text(
+                "${it.name}: ${it.grams.clean()}g, ${it.kcal.toInt()} kcal (P${it.protein.toInt()} C${it.carbs.toInt()} F${it.fat.toInt()})",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (parsed.isNotEmpty()) {
+            Button(onClick = { onLog(parsed) }, modifier = Modifier.fillMaxWidth()) {
                 Text("Log ${parsed.size} item(s)")
             }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text("AI Food Entry") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    label = { Text("Describe your meal (e.g. 2 eggs and toast)") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        scope.launch { runParse(null) }
-                    }, enabled = text.isNotBlank() && !busy) { Text("Parse") }
-                    if (takePhoto != null) {
-                        Button(onClick = {
-                            scope.launch {
-                                val photo = takePhoto()
-                                if (photo != null) runParse(photo) else error = "No photo taken"
-                            }
-                        }, enabled = !busy) { Text("Snap Photo") }
-                    }
-                }
-                if (busy) CircularProgressIndicator()
-                if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
-                parsed.forEach {
-                    Text(
-                        "${it.name}: ${it.grams.clean()}g, ${it.kcal.toInt()} kcal (P${it.protein.toInt()} C${it.carbs.toInt()} F${it.fat.toInt()})",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        },
-    )
+        }
+    }
 }
 
 @Composable
-private fun AddFoodDialog(
-    db: AppDatabase,
-    off: OpenFoodFacts,
-    scanBarcode: (suspend () -> String?)?,
-    onDismiss: () -> Unit,
-    onAdd: (Food, Double) -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<Food>>(emptyList()) }
-    var searching by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf<Food?>(null) }
-    var grams by remember { mutableStateOf("100") }
-    var missedBarcode by remember { mutableStateOf<String?>(null) }
-    var newName by remember { mutableStateOf("") }
-    var newKcal by remember { mutableStateOf("") }
-    var newP by remember { mutableStateOf("") }
-    var newC by remember { mutableStateOf("") }
-    var newF by remember { mutableStateOf("") }
+private fun QuickAddTab(onAdd: (Food, Double) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var kcal by remember { mutableStateOf("") }
+    var p by remember { mutableStateOf("") }
+    var c by remember { mutableStateOf("") }
+    var f by remember { mutableStateOf("") }
 
-    LaunchedEffect(Unit) { results = db.foodDao().recentFoods() }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            val food = selected
-            TextButton(
-                onClick = { food?.let { onAdd(it, grams.toDoubleOrNull() ?: 100.0) } },
-                enabled = food != null,
-            ) { Text("Add") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text("Add Food") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        label = { Text("Search") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                    )
-                    OutlinedButton(onClick = {
-                        scope.launch {
-                            searching = true
-                            val local = db.foodDao().search(query)
-                            results = local + off.search(query).filter { remote ->
-                                local.none { it.barcode != null && it.barcode == remote.barcode }
-                            }
-                            searching = false
-                        }
-                    }) { Text("Go") }
-                }
-                if (scanBarcode != null) {
-                    OutlinedButton(onClick = {
-                        scope.launch {
-                            searching = true
-                            val code = scanBarcode()
-                            if (code != null) {
-                                val food = db.foodDao().byBarcode(code) ?: off.byBarcode(code)
-                                if (food != null) {
-                                    results = listOf(food)
-                                    selected = food
-                                    missedBarcode = null
-                                } else {
-                                    missedBarcode = code
-                                }
-                            }
-                            searching = false
-                        }
-                    }, modifier = Modifier.fillMaxWidth()) { Text("Scan Barcode") }
-                }
-                if (searching) CircularProgressIndicator()
-                missedBarcode?.let { code ->
-                    Text("Barcode $code not found — create it:", style = MaterialTheme.typography.bodySmall)
-                    OutlinedTextField(newName, { newName = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        OutlinedTextField(newKcal, { newKcal = it }, label = { Text("kcal/100g") }, singleLine = true, modifier = Modifier.weight(1f))
-                        OutlinedTextField(newP, { newP = it }, label = { Text("P") }, singleLine = true, modifier = Modifier.weight(0.6f))
-                        OutlinedTextField(newC, { newC = it }, label = { Text("C") }, singleLine = true, modifier = Modifier.weight(0.6f))
-                        OutlinedTextField(newF, { newF = it }, label = { Text("F") }, singleLine = true, modifier = Modifier.weight(0.6f))
-                    }
-                    OutlinedButton(onClick = {
-                        scope.launch {
-                            val food = Food(
-                                barcode = code,
-                                name = newName.trim(),
-                                kcal = newKcal.toDoubleOrNull() ?: 0.0,
-                                protein = newP.toDoubleOrNull() ?: 0.0,
-                                carbs = newC.toDoubleOrNull() ?: 0.0,
-                                fat = newF.toDoubleOrNull() ?: 0.0,
-                                custom = true,
-                            )
-                            db.foodDao().upsert(food)
-                            results = listOf(food)
-                            selected = food
-                            missedBarcode = null
-                            // contribute upstream to Open Food Facts if creds configured
-                            val user = db.settingDao().get("offUser").orEmpty()
-                            val pass = db.settingDao().get("offPassword").orEmpty()
-                            if (user.isNotBlank() && pass.isNotBlank()) off.submitProduct(food, user, pass)
-                        }
-                    }, enabled = newName.isNotBlank() && newKcal.isNotBlank()) { Text("Create food") }
-                }
-                LazyColumn(Modifier.heightIn(max = 260.dp)) {
-                    items(results, key = { it.id }) { food ->
-                        Column(
-                            Modifier.fillMaxWidth().clickable { selected = food }.padding(vertical = 8.dp)
-                        ) {
-                            Text(
-                                food.name,
-                                color = if (food.id == selected?.id) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                "${food.brand} · ${food.kcal.toInt()} kcal/100g · P${food.protein.toInt()} C${food.carbs.toInt()} F${food.fat.toInt()}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-                OutlinedTextField(
-                    value = grams,
-                    onValueChange = { grams = it },
-                    label = { Text("Grams") },
-                    singleLine = true,
-                )
-            }
-        },
-    )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "Log calories/macros directly — no database lookup.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(name, { name = it }, label = { Text("Name (e.g. Restaurant meal)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(kcal, { kcal = it }, label = { Text("Calories") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(p, { p = it }, label = { Text("P (g)") }, singleLine = true, modifier = Modifier.weight(1f))
+            OutlinedTextField(f, { f = it }, label = { Text("F (g)") }, singleLine = true, modifier = Modifier.weight(1f))
+            OutlinedTextField(c, { c = it }, label = { Text("C (g)") }, singleLine = true, modifier = Modifier.weight(1f))
+        }
+        Button(onClick = {
+            // stored as a 100g custom food logged at 100g, so per-100g == the entered totals
+            onAdd(
+                Food(
+                    name = name.ifBlank { "Quick Add" },
+                    kcal = kcal.toDoubleOrNull() ?: 0.0,
+                    protein = p.toDoubleOrNull() ?: 0.0,
+                    carbs = c.toDoubleOrNull() ?: 0.0,
+                    fat = f.toDoubleOrNull() ?: 0.0,
+                    custom = true,
+                ),
+                100.0,
+            )
+        }, enabled = kcal.toDoubleOrNull() != null, modifier = Modifier.fillMaxWidth()) { Text("Log") }
+    }
 }

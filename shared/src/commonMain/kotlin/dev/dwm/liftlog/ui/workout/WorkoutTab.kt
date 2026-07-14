@@ -125,7 +125,7 @@ fun WorkoutTab(db: AppDatabase, modifier: Modifier = Modifier, refreshKey: Int =
     }
 }
 
-// ---------- Strong-style start screen: Quick Start / Routines / Programs ----------
+// ---------- Boostcamp-style start screen: program hero / routine day cards ----------
 
 @Composable
 private fun StartScreen(db: AppDatabase, modifier: Modifier, onStarted: (Workout) -> Unit) {
@@ -143,26 +143,32 @@ private fun StartScreen(db: AppDatabase, modifier: Modifier, onStarted: (Workout
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            Text("Quick Start", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Button(
-                onClick = {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Train", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                TextButton(onClick = {
                     scope.launch {
                         val w = Workout(name = "Workout", startedAt = now())
                         db.workoutDao().insertWorkout(w)
                         onStarted(w)
                     }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            ) { Text("Start Empty Workout") }
+                }) { Text("Quick Start", color = Palette.Boost, fontWeight = FontWeight.Bold) }
+            }
         }
+        item { ProgramsSection(db, onStarted) }
         item {
             Row(
                 Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Routines", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                TextButton(onClick = { editorFor = null; showEditor = true }) { Text("+ New Routine") }
+                Text("My Routines", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                TextButton(onClick = { editorFor = null; showEditor = true }) {
+                    Text("+ New", color = Palette.Boost, fontWeight = FontWeight.Bold)
+                }
             }
             if (routines.isEmpty()) {
                 Text(
@@ -176,12 +182,12 @@ private fun StartScreen(db: AppDatabase, modifier: Modifier, onStarted: (Workout
         items(routines, key = { it.id }) { routine ->
             RoutineCard(
                 db, routine,
+                index = routines.indexOf(routine) + 1,
                 onStart = { scope.launch { onStarted(startRoutineWorkout(db, routine)) } },
                 onEdit = { editorFor = routine; showEditor = true },
                 onDelete = { scope.launch { db.routineDao().delete(routine.id) } },
             )
         }
-        item { ProgramsSection(db, onStarted) }
         item { RecoveryCard(db) }
     }
 }
@@ -190,31 +196,48 @@ private fun StartScreen(db: AppDatabase, modifier: Modifier, onStarted: (Workout
 private fun RoutineCard(
     db: AppDatabase,
     routine: Routine,
+    index: Int,
     onStart: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var preview by remember { mutableStateOf("") }
+    var count by remember { mutableStateOf(0) }
     LaunchedEffect(routine.id, routine.updatedAt) {
         val names = db.routineDao().exercisesFor(routine.id)
             .mapNotNull { db.exerciseDao().byId(it.exerciseId)?.name }
-        preview = names.joinToString(", ")
+        count = names.size
+        preview = names.joinToString(" · ")
     }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(routine.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            if (preview.isNotBlank()) {
+    // Boostcamp day card: numbered coral badge, name + exercise preview, Start pill
+    Card(Modifier.fillMaxWidth().clickable(onClick = onEdit)) {
+        Row(
+            Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                Modifier.size(40.dp).background(Palette.Boost.copy(alpha = 0.18f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Text("$index", color = Palette.Boost, fontWeight = FontWeight.Bold) }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(routine.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    preview,
+                    if (preview.isBlank()) "Tap to add exercises" else "$count exercises · $preview",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = onStart) { Text("Start Routine") }
-                TextButton(onClick = onEdit) { Text("Edit") }
-                TextButton(onClick = onDelete) { Text("Delete", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.Delete, "delete routine", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            Box(
+                Modifier.background(Palette.Boost, RoundedCornerShape(20.dp))
+                    .clickable(onClick = onStart)
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+            ) { Text("Start", color = Color.White, fontWeight = FontWeight.Bold) }
         }
     }
 }
@@ -353,24 +376,48 @@ private fun ProgramCard(db: AppDatabase, program: Program, onStarted: (Workout) 
     val scope = rememberCoroutineScope()
     var days by remember { mutableStateOf<List<ProgramDay>>(emptyList()) }
     LaunchedEffect(program.id, program.currentDayIndex) { days = db.programDao().daysFor(program.id) }
-    val today = days.getOrNull(program.currentDayIndex % days.size.coerceAtLeast(1))
+    val n = days.size.coerceAtLeast(1)
+    val dayNum = (program.currentDayIndex % n) + 1
+    val today = days.getOrNull(program.currentDayIndex % n)
 
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(program.name, style = MaterialTheme.typography.titleMedium)
-            Text(
-                "Next: ${today?.name ?: "…"} (day ${(program.currentDayIndex % days.size.coerceAtLeast(1)) + 1}/${days.size})",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    // Boostcamp hero: coral gradient card with cycle progress + big start pill
+    Box(
+        Modifier.fillMaxWidth()
+            .background(
+                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                    listOf(Color(0xFFFF6B4A), Color(0xFFE8452E)),
+                ),
+                RoundedCornerShape(16.dp),
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = {
-                    scope.launch { startProgramWorkout(db, program)?.let(onStarted) }
-                }) { Text("Start ${today?.name ?: "workout"}") }
-                TextButton(onClick = { scope.launch { db.programDao().deleteProgram(program.id) } }) {
-                    Text("Delete")
+            .padding(16.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(program.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(
+                        "Next: ${today?.name ?: "…"} · Day $dayNum of ${days.size}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.85f),
+                    )
+                }
+                IconButton(onClick = { scope.launch { db.programDao().deleteProgram(program.id) } }) {
+                    Icon(Icons.Default.Delete, "delete program", tint = Color.White.copy(alpha = 0.7f))
                 }
             }
+            LinearProgressIndicator(
+                progress = { dayNum / n.toFloat() },
+                color = Color.White,
+                trackColor = Color.White.copy(alpha = 0.25f),
+                modifier = Modifier.fillMaxWidth().height(6.dp),
+            )
+            Box(
+                Modifier.fillMaxWidth()
+                    .background(Color.White, RoundedCornerShape(24.dp))
+                    .clickable { scope.launch { startProgramWorkout(db, program)?.let(onStarted) } }
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text("Start ${today?.name ?: "Workout"}", color = Color(0xFFE8452E), fontWeight = FontWeight.Bold) }
         }
     }
 }
