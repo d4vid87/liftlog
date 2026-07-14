@@ -23,7 +23,7 @@ compose.desktop {
         mainClass = "dev.dwm.liftlog.MainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Deb, TargetFormat.Msi)
-            packageName = "LiftLog"
+            packageName = "Overload"
             packageVersion = "1.0.0"
             linux { debMaintainer = "davidmay87@gmail.com" }
         }

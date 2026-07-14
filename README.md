@@ -1,4 +1,4 @@
-# LiftLog
+# Overload (formerly LiftLog)
 
 Personal, local-first fitness app: workout tracking + programs with auto-progression + nutrition with an adherence-neutral TDEE algorithm. One Kotlin Multiplatform codebase → Android (S24 Ultra), Wear OS, Linux/Windows desktop, with optional cloud sync through a Netlify function.
 

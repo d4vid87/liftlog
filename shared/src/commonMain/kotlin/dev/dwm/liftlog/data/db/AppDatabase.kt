@@ -4,6 +4,17 @@ import androidx.room.ConstructedBy
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.RoomDatabaseConstructor
+import androidx.room.migration.Migration
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.execSQL
+
+// v6: per-exercise rest + supersets — additive, no data loss
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL("ALTER TABLE RoutineExercise ADD COLUMN restSeconds INTEGER")
+        connection.execSQL("ALTER TABLE RoutineExercise ADD COLUMN supersetGroup INTEGER")
+    }
+}
 
 @Database(
     entities = [
@@ -12,7 +23,7 @@ import androidx.room.RoomDatabaseConstructor
         Food::class, FoodLog::class, WeightEntry::class, Setting::class,
         GroceryItem::class, Routine::class, RoutineExercise::class,
     ],
-    version = 5,
+    version = 6,
 )
 @ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {

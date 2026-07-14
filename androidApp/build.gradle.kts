@@ -15,6 +15,7 @@ kotlin {
             implementation("androidx.fragment:fragment-ktx:1.8.5")
             implementation(libs.barcode.scanner)
             implementation(libs.wearable)
+            implementation("androidx.glance:glance-appwidget:1.1.1")
         }
     }
 }
@@ -26,8 +27,8 @@ android {
         applicationId = "dev.dwm.liftlog"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 7
+        versionName = "0.7.0"
     }
     buildTypes {
         release {

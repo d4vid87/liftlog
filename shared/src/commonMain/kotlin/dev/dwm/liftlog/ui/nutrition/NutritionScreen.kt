@@ -16,9 +16,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -40,6 +45,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -71,8 +77,10 @@ import dev.dwm.liftlog.ui.collectAsStateList
 import dev.dwm.liftlog.ui.workout.clean
 import dev.dwm.liftlog.data.db.WeightEntry
 import kotlinx.coroutines.launch
+import dev.dwm.liftlog.data.aiClient
 import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlinx.datetime.todayIn
 
 val meals = listOf("Breakfast", "Lunch", "Dinner", "Snack")
@@ -153,11 +161,45 @@ fun NutritionScreen(
     val carbs = totals.sumOf { (g, f) -> g * f.carbs / 100 }
     val fat = totals.sumOf { (g, f) -> g * f.fat / 100 }
 
-    LazyColumn(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    // one-tap photo → parse → auto-log into the meal matching the current hour
+    var snapBusy by remember { mutableStateOf(false) }
+    var snapError by remember { mutableStateOf("") }
+    var undoIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var undoLabel by remember { mutableStateOf("") }
+    fun mealForNow(): String {
+        val hour = kotlinx.datetime.Clock.System.now()
+            .toLocalDateTime(TimeZone.currentSystemDefault()).hour
+        return when {
+            hour < 11 -> "Breakfast"
+            hour < 16 -> "Lunch"
+            hour < 21 -> "Dinner"
+            else -> "Snack"
+        }
+    }
+
+    LazyColumn(
+        modifier.fillMaxSize()
+            .padding(12.dp)
+            // swipe left/right to move between days
+            .pointerInput(Unit) {
+                var drag = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { drag = 0f },
+                    onHorizontalDrag = { _, amount -> drag += amount },
+                    onDragEnd = {
+                        if (drag < -120f) day++ else if (drag > 120f) day--
+                    },
+                )
+            },
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { day-- }) { Text("◀") }
-                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    Modifier.weight(1f).clickable { if (day != today) day = today },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     Text(
                         when (day) {
                             today -> "Today"
@@ -170,18 +212,81 @@ fun NutritionScreen(
                     )
                     if (day != today) {
                         Text(
-                            if (day > today) "planning" else "history",
+                            if (day > today) "planning — tap for today" else "history — tap for today",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
                 TextButton(onClick = { day++ }) { Text("▶") }
+                if (takePhoto != null) {
+                    IconButton(onClick = {
+                        scope.launch {
+                            snapBusy = true; snapError = ""
+                            val photo = takePhoto()
+                            if (photo == null) { snapBusy = false; return@launch }
+                            val client = aiClient(db).getOrElse {
+                                snapError = it.message ?: "AI not configured"; snapBusy = false; return@launch
+                            }
+                            val parsed = runCatching { client.parseFoods("", photo) }
+                                .getOrElse { snapError = "Photo parse failed: ${it.message}"; snapBusy = false; return@launch }
+                            if (parsed.isEmpty()) {
+                                snapError = "Couldn't identify any food in the photo"
+                            } else {
+                                val meal = mealForNow()
+                                val ids = mutableListOf<String>()
+                                parsed.forEach { p ->
+                                    val food = p.toFood()
+                                    db.foodDao().upsert(food)
+                                    val log = FoodLog(epochDay = day, foodId = food.id, grams = p.grams, meal = meal)
+                                    db.foodLogDao().insert(log)
+                                    ids.add(log.id)
+                                }
+                                undoIds = ids
+                                undoLabel = "Logged ${parsed.size} food${if (parsed.size > 1) "s" else ""} to $meal (${parsed.sumOf { it.kcal }.toInt()} kcal)"
+                            }
+                            snapBusy = false
+                        }
+                    }, enabled = !snapBusy) {
+                        Icon(Icons.Default.PhotoCamera, "photo food log", tint = Palette.Trend)
+                    }
+                }
+                Box {
+                    var menuOpen by remember { mutableStateOf(false) }
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Default.MoreVert, "more", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(text = { Text("Micronutrients") }, onClick = { menuOpen = false; showMicros = true })
+                        DropdownMenuItem(text = { Text("Groceries") }, onClick = { menuOpen = false; showGroceries = true })
+                    }
+                }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { showMicros = true }, modifier = Modifier.weight(1f)) { Text("Micros") }
-                OutlinedButton(onClick = { showGroceries = true }, modifier = Modifier.weight(1f)) { Text("Groceries") }
-                if (day != today) OutlinedButton(onClick = { day = today }, modifier = Modifier.weight(1f)) { Text("Today") }
+            if (snapBusy) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(Modifier.size(18.dp))
+                    Text("Analyzing photo…", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (snapError.isNotBlank()) {
+                Text(snapError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+            if (undoIds.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth()
+                        .background(Palette.Success.copy(alpha = 0.15f), androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(undoLabel, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = Palette.Success)
+                    TextButton(onClick = {
+                        scope.launch {
+                            undoIds.forEach { db.foodLogDao().delete(it) }
+                            undoIds = emptyList()
+                        }
+                    }) { Text("Undo") }
+                    TextButton(onClick = { undoIds = emptyList() }) { Text("✕") }
+                }
             }
         }
         item {
@@ -226,7 +331,6 @@ fun NutritionScreen(
                 }
             }
         }
-        item { WeeklyMacroCard(week, today, targetKcal) }
         meals.forEach { meal ->
             item {
                 Row(
@@ -267,6 +371,7 @@ fun NutritionScreen(
                 }
             }
         }
+        item { WeeklyMacroCard(week, today, targetKcal) }
     }
 }
 
@@ -516,28 +621,26 @@ private fun LogFoodsDialog(
         add("Search"); add("AI"); add("Quick Add")
     }
     var tab by remember { mutableStateOf("Search") }
-    var grams by remember { mutableStateOf("100") }
+    var grams by remember { mutableStateOf("") }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        title = { Text("Log Foods") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    tabs.forEach { t ->
-                        FilterChip(selected = tab == t, onClick = { tab = t }, label = { Text(t) })
-                    }
-                }
-                when (tab) {
-                    "Scan" -> ScanTab(db, off, scanBarcode!!, grams, { grams = it }, onAdd)
-                    "Search" -> SearchTab(db, off, grams, { grams = it }, onAdd)
-                    "AI" -> AiTab(db, takePhoto, onLogParsed)
-                    "Quick Add" -> QuickAddTab(onAdd)
+    dev.dwm.liftlog.ui.components.FullScreenDialog("Log Foods", onDismiss) {
+        Column(
+            Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                tabs.forEach { t ->
+                    FilterChip(selected = tab == t, onClick = { tab = t }, label = { Text(t) })
                 }
             }
-        },
-    )
+            when (tab) {
+                "Scan" -> ScanTab(db, off, scanBarcode!!, grams, { grams = it }, onAdd)
+                "Search" -> SearchTab(db, off, grams, { grams = it }, onAdd)
+                "AI" -> AiTab(db, takePhoto, onLogParsed)
+                "Quick Add" -> QuickAddTab(onAdd)
+            }
+        }
+    }
 }
 
 @Composable
@@ -545,7 +648,7 @@ private fun GramsField(grams: String, onGrams: (String) -> Unit) {
     OutlinedTextField(
         value = grams,
         onValueChange = onGrams,
-        label = { Text("Grams") },
+        label = { Text("Grams (blank = last-used portion)") },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
@@ -589,9 +692,17 @@ private fun SearchTab(
     var results by remember { mutableStateOf<List<Food>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) { results = db.foodDao().recentFoods() }
+    // recents on open; local search-as-you-type (debounced); OFF only on "Web"
+    LaunchedEffect(query) {
+        if (query.isBlank()) {
+            results = db.foodDao().recentFoods()
+        } else {
+            kotlinx.coroutines.delay(250)
+            results = db.foodDao().search(query)
+        }
+    }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = query,
@@ -609,13 +720,24 @@ private fun SearchTab(
                     }
                     searching = false
                 }
-            }) { Text("Go") }
+            }, enabled = query.isNotBlank()) { Text("Web") }
         }
         GramsField(grams, onGrams)
         if (searching) CircularProgressIndicator()
-        LazyColumn(Modifier.heightIn(max = 280.dp)) {
+        if (query.isBlank() && results.isNotEmpty()) {
+            Text("Recent", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        LazyColumn(Modifier.weight(1f)) {
             items(results, key = { it.id }) { food ->
-                FoodResultRow(food) { onAdd(food, grams.toDoubleOrNull() ?: 100.0) }
+                FoodResultRow(food) {
+                    // + logs instantly: explicit grams > last-used portion > 100g
+                    scope.launch {
+                        val g = grams.toDoubleOrNull()
+                            ?: db.foodLogDao().lastLogFor(food.id)?.grams
+                            ?: 100.0
+                        onAdd(food, g)
+                    }
+                }
             }
         }
     }
@@ -702,16 +824,14 @@ private fun AiTab(
 
     suspend fun runParse(imageB64: String?) {
         busy = true; error = ""
-        val endpoint = db.settingDao().get("aiEndpoint") ?: ""
-        val model = db.settingDao().get("aiModel") ?: ""
-        if (endpoint.isBlank() || model.isBlank()) {
-            error = "Set AI endpoint + model in More tab"
-        } else {
-            val ai = AiClient(httpClient(), endpoint, model, db.settingDao().get("aiApiKey"))
-            parsed = runCatching { ai.parseFoods(text, imageB64) }
-                .getOrElse { error = it.message ?: "failed"; emptyList() }
-            if (parsed.isEmpty() && error.isBlank()) error = "Nothing parsed"
+        val ai = aiClient(db).getOrElse {
+            error = it.message ?: "AI not configured"
+            busy = false
+            return
         }
+        parsed = runCatching { ai.parseFoods(text, imageB64) }
+            .getOrElse { error = it.message ?: "failed"; emptyList() }
+        if (parsed.isEmpty() && error.isBlank()) error = "Nothing parsed"
         busy = false
     }
 

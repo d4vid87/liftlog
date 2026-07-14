@@ -30,14 +30,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.dwm.liftlog.data.db.AppDatabase
 import dev.dwm.liftlog.data.db.WeightEntry
+import dev.dwm.liftlog.data.db.nowMillis
+import dev.dwm.liftlog.domain.e1rm
+import kotlinx.coroutines.flow.first
 import dev.dwm.liftlog.domain.DayIntake
 import dev.dwm.liftlog.domain.DayWeight
 import dev.dwm.liftlog.domain.TdeeResult
@@ -67,6 +76,10 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
     var weights by remember { mutableStateOf<List<WeightEntry>>(emptyList()) }
     var intakes by remember { mutableStateOf<List<DayIntake>>(emptyList()) }
     var fabOpen by remember { mutableStateOf(false) }
+    var workoutDays by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var streakWeeks by remember { mutableStateOf(0) }
+    var insights by remember { mutableStateOf<List<String>>(emptyList()) }
+    var recap by remember { mutableStateOf<WeekRecap?>(null) }
 
     LaunchedEffect(logs) {
         var k = 0.0; var p = 0.0; var c = 0.0; var f = 0.0
@@ -91,6 +104,65 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
         targetKcal = tdee?.targetKcal ?: db.settingDao().get("targetKcal")?.toDoubleOrNull() ?: 2000.0
         proteinPct = db.settingDao().get("proteinPct")?.toDoubleOrNull() ?: 30.0
         fatPct = db.settingDao().get("fatPct")?.toDoubleOrNull() ?: 30.0
+        // cache for the home-screen widget
+        db.settingDao().put(dev.dwm.liftlog.data.db.Setting("lastTargetKcal", "$targetKcal"))
+
+        // streak + week dots + recap + insights (all pure reads)
+        val workouts = db.workoutDao().history().first()
+        val dayMs = 86_400_000L
+        workoutDays = workouts.map { it.startedAt / dayMs }.toSet()
+        // consecutive weeks (ending this week) with ≥1 workout; weeks start Monday
+        val thisWeek = (today + 3) / 7 // epochDay 0 = Thursday; +3 aligns Monday week boundaries
+        val weeksTrained = workoutDays.map { (it + 3) / 7 }.toSet()
+        var wk = thisWeek
+        var streak = 0
+        while (wk in weeksTrained) { streak++; wk-- }
+        streakWeeks = streak
+
+        // last calendar week recap, shown Mon-Tue
+        val dow = ((today + 3) % 7).toInt() // 0 = Monday
+        if (dow <= 1) {
+            val lastWeekStart = today - dow - 7
+            val lastWeek = workouts.filter { (it.startedAt / dayMs) in lastWeekStart until lastWeekStart + 7 }
+            if (lastWeek.isNotEmpty() || intakes.any { it.epochDay in lastWeekStart until lastWeekStart + 7 }) {
+                var volume = 0.0
+                for (w in lastWeek) {
+                    volume += db.workoutDao().setsForWorkoutOnce(w.id)
+                        .filter { it.completed }.sumOf { it.weightKg * it.reps }
+                }
+                val weekKcals = intakes.filter { it.epochDay in lastWeekStart until lastWeekStart + 7 }
+                val adherence = if (weekKcals.isEmpty() || targetKcal <= 0) null
+                else (weekKcals.map { it.kcal }.average() / targetKcal * 100).toInt()
+                recap = WeekRecap(lastWeek.size, volume, adherence)
+            }
+        }
+
+        // insights: top-3 exercise e1RM deltas over 30 days + protein 7d avg + weight 7d delta
+        val list = mutableListOf<String>()
+        val since = nowMillis() - 30 * dayMs
+        val recentSets = db.syncDao().setsSince(since).filter { it.completed && it.deletedAt == null && it.weightKg > 0 }
+        recentSets.groupBy { it.exerciseId }
+            .entries.sortedByDescending { it.value.size }.take(3)
+            .forEach { (exId, exSets) ->
+                val name = db.exerciseDao().byId(exId)?.name ?: return@forEach
+                val bestNow = exSets.maxOf { e1rm(it.weightKg, it.reps) }
+                val bestBefore = db.workoutDao().bestE1rmBefore(exId, since) ?: return@forEach
+                val delta = (bestNow - bestBefore).kgToLbDisplay()
+                if (delta > 0.4) list.add("$name e1RM up ${delta.clean()} lb this month")
+                else if (delta < -0.4) list.add("$name e1RM down ${(-delta).clean()} lb this month")
+            }
+        val protein7 = db.foodLogDao().dailyMacros(today - 6).filter { it.protein > 0 }
+        if (protein7.isNotEmpty()) {
+            val avg = protein7.map { it.protein }.average().toInt()
+            val target = (targetKcal * proteinPct / 100 / 4).toInt()
+            list.add("7-day protein average ${avg}g vs ${target}g target")
+        }
+        val w7 = weights.filter { it.epochDay >= today - 7 }
+        if (w7.size >= 2) {
+            val d = (w7.last().kg - w7.first().kg).kgToLbDisplay()
+            list.add("Weight ${if (d >= 0) "+" else ""}${d.clean()} lb over 7 days")
+        }
+        insights = list
     }
 
     Box(modifier.fillMaxSize()) {
@@ -98,7 +170,29 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Today", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Today", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                if (streakWeeks > 0) {
+                    Row(
+                        Modifier.background(Palette.Boost.copy(alpha = 0.15f), RoundedCornerShape(16.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "🔥 $streakWeeks week streak",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Palette.Boost,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+            WeekDots(workoutDays, intakes.map { it.epochDay }.toSet(), today)
+            recap?.let { WeeklyRecapCard(it) }
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Calories", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -126,8 +220,10 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
                     MacroBar("Fat", fat, targetKcal * fatPct / 100 / 9, Palette.Fat)
                 }
             }
+            if (insights.isNotEmpty()) InsightsCard(insights)
             WeightTrendCard(weights, today)
             ExpenditureCard(intakes, tdee, today)
+            dev.dwm.liftlog.ui.workout.RecoveryCard(db)
         }
         Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
             FloatingActionButton(onClick = { fabOpen = true }, containerColor = Palette.Calories) {
@@ -148,6 +244,81 @@ private fun LabeledValue(label: String, value: String) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+    }
+}
+
+data class WeekRecap(val workouts: Int, val volumeKg: Double, val adherencePct: Int?)
+
+@Composable
+private fun WeeklyRecapCard(r: WeekRecap) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Your Week", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Palette.Boost)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                RecapStat("${r.workouts}", "workouts")
+                RecapStat("${(r.volumeKg * 2.20462).toInt()}", "lb volume")
+                RecapStat(r.adherencePct?.let { "$it%" } ?: "—", "kcal adherence")
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecapStat(value: String, label: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** 7-day dot row: filled green = trained, cyan ring = food logged, dim = nothing. */
+@Composable
+private fun WeekDots(workoutDays: Set<Long>, loggedDays: Set<Long>, today: Long) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ((today - 6)..today).forEach { day ->
+            val trained = day in workoutDays
+            val logged = day in loggedDays
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    Modifier.size(26.dp).background(
+                        when {
+                            trained -> Palette.Success
+                            logged -> Palette.Volt.copy(alpha = 0.35f)
+                            else -> MaterialTheme.colorScheme.surfaceVariant
+                        },
+                        androidx.compose.foundation.shape.CircleShape,
+                    ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (trained) Text("✓", color = Color.Black, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                }
+                Text(
+                    dashDayLetter(day),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (day == today) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private fun dashDayLetter(epochDay: Long): String =
+    when ((epochDay + 3).mod(7L)) {
+        0L -> "M"; 1L -> "T"; 2L -> "W"; 3L -> "T"; 4L -> "F"; 5L -> "S"; else -> "S"
+    }
+
+@Composable
+private fun InsightsCard(insights: List<String>) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Insights", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            insights.forEach {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.size(6.dp).background(Palette.Volt, androidx.compose.foundation.shape.CircleShape))
+                    Text(it, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
     }
 }
 
@@ -227,9 +398,10 @@ private fun WeightTrendCard(all: List<WeightEntry>, today: Long) {
                 TrendChart(
                     Modifier.fillMaxWidth().height(140.dp),
                     series = listOf(
-                        Series(entries.map { it.epochDay to it.kg }, Palette.Trend.copy(alpha = 0.45f), dots = true),
-                        Series(trend.map { it.epochDay to it.kg }, Palette.Trend),
+                        Series(entries.map { it.epochDay to it.kg.kgToLbDisplay() }, Palette.Trend.copy(alpha = 0.45f), dots = true),
+                        Series(trend.map { it.epochDay to it.kg.kgToLbDisplay() }, Palette.Trend),
                     ),
+                    unit = "lb",
                 )
             } else {
                 Text(
@@ -270,6 +442,7 @@ private fun ExpenditureCard(all: List<DayIntake>, tdee: TdeeResult?, today: Long
                             )
                         },
                     ),
+                    unit = "kcal",
                 )
             } else {
                 Text(
@@ -283,28 +456,80 @@ private fun ExpenditureCard(all: List<DayIntake>, tdee: TdeeResult?, today: Long
     }
 }
 
-private data class Series(val points: List<Pair<Long, Double>>, val color: androidx.compose.ui.graphics.Color, val dots: Boolean = false)
+private data class Series(val points: List<Pair<Long, Double>>, val color: Color, val dots: Boolean = false)
 
+/** Bezier-smoothed lines, gradient fill under the last series, drag to scrub a value tooltip. */
 @Composable
-private fun TrendChart(modifier: Modifier, series: List<Series>) {
+private fun TrendChart(modifier: Modifier, series: List<Series>, unit: String = "") {
     val pts = series.flatMap { it.points }
     if (pts.isEmpty()) return
     val minD = pts.minOf { it.first }
     val maxD = pts.maxOf { it.first }
     val minV = pts.minOf { it.second }
     val maxV = pts.maxOf { it.second }
-    Canvas(modifier) {
-        val spanD = (maxD - minD).coerceAtLeast(1)
-        val spanV = (maxV - minV).coerceAtLeast(0.5)
-        for (s in series) {
-            val offsets = s.points.map {
-                Offset(
-                    x = (it.first - minD) / spanD.toFloat() * size.width,
-                    y = size.height - ((it.second - minV) / spanV).toFloat() * size.height * 0.85f - size.height * 0.075f,
-                )
+    var scrub by remember(series) { mutableStateOf<Pair<Long, Double>?>(null) }
+
+    Column {
+        Text(
+            scrub?.let { (d, v) ->
+                "${kotlinx.datetime.LocalDate.fromEpochDays(d.toInt())}: ${v.clean()} $unit"
+            } ?: " ",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Canvas(
+            modifier.pointerInput(series) {
+                detectHorizontalDragGestures(
+                    onDragEnd = { scrub = null },
+                    onDragCancel = { scrub = null },
+                ) { change, _ ->
+                    val spanD = (maxD - minD).coerceAtLeast(1)
+                    val day = minD + ((change.position.x / size.width) * spanD).toLong()
+                    val primary = series.last().points
+                    scrub = primary.minByOrNull { kotlin.math.abs(it.first - day) }
+                }
+            },
+        ) {
+            val spanD = (maxD - minD).coerceAtLeast(1)
+            val spanV = (maxV - minV).coerceAtLeast(0.5)
+            fun toOffset(p: Pair<Long, Double>) = Offset(
+                x = (p.first - minD) / spanD.toFloat() * size.width,
+                y = size.height - ((p.second - minV) / spanV).toFloat() * size.height * 0.85f - size.height * 0.075f,
+            )
+            series.forEachIndexed { idx, s ->
+                val offsets = s.points.map(::toOffset)
+                if (offsets.size < 2) return@forEachIndexed
+                // midpoint quadratic smoothing
+                val path = Path().apply {
+                    moveTo(offsets.first().x, offsets.first().y)
+                    for (i in 1 until offsets.size) {
+                        val prev = offsets[i - 1]
+                        val cur = offsets[i]
+                        val mid = Offset((prev.x + cur.x) / 2, (prev.y + cur.y) / 2)
+                        quadraticTo(prev.x, prev.y, mid.x, mid.y)
+                    }
+                    lineTo(offsets.last().x, offsets.last().y)
+                }
+                if (idx == series.lastIndex) {
+                    val fill = Path().apply {
+                        addPath(path)
+                        lineTo(offsets.last().x, size.height)
+                        lineTo(offsets.first().x, size.height)
+                        close()
+                    }
+                    drawPath(
+                        fill,
+                        Brush.verticalGradient(listOf(s.color.copy(alpha = 0.25f), Color.Transparent)),
+                    )
+                }
+                drawPath(path, s.color, style = Stroke(width = 4f, cap = StrokeCap.Round))
+                if (s.dots) offsets.forEach { drawCircle(s.color, radius = 5f, center = it) }
             }
-            offsets.zipWithNext { a, b -> drawLine(s.color, a, b, strokeWidth = 4f, cap = StrokeCap.Round) }
-            if (s.dots) offsets.forEach { drawCircle(s.color, radius = 5f, center = it) }
+            scrub?.let { p ->
+                val o = toOffset(p)
+                drawLine(Color.White.copy(alpha = 0.4f), Offset(o.x, 0f), Offset(o.x, size.height), strokeWidth = 2f)
+                drawCircle(Color.White, radius = 7f, center = o)
+            }
         }
     }
 }

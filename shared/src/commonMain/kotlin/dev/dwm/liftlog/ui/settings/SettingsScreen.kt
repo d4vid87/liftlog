@@ -10,9 +10,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -37,6 +41,8 @@ fun SettingsScreen(
     db: AppDatabase,
     modifier: Modifier = Modifier,
     saveExport: (suspend (String) -> String)? = null,
+    uiScale: Float? = null,
+    onUiScale: ((Float) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
     var syncUrl by remember { mutableStateOf("") }
@@ -50,6 +56,9 @@ fun SettingsScreen(
     var offUser by remember { mutableStateOf("") }
     var offPass by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+    var restSeconds by remember { mutableStateOf("90") }
+    var autoStartRest by remember { mutableStateOf(true) }
+    var showRpe by remember { mutableStateOf(false) }
     val engine = remember { SyncEngine(db, httpClient()) }
 
     LaunchedEffect(Unit) {
@@ -64,12 +73,61 @@ fun SettingsScreen(
         aiKey = db.settingDao().get("aiApiKey") ?: ""
         offUser = db.settingDao().get("offUser") ?: ""
         offPass = db.settingDao().get("offPassword") ?: ""
+        restSeconds = db.settingDao().get("restSeconds") ?: "90"
+        autoStartRest = db.settingDao().get("autoStartRest") != "false"
+        showRpe = db.settingDao().get("showRpe") == "true"
     }
 
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        if (uiScale != null && onUiScale != null) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("UI Scale", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "${(uiScale * 100).toInt()}% — also Ctrl+= / Ctrl+− / Ctrl+0",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Slider(
+                        value = uiScale,
+                        onValueChange = onUiScale,
+                        valueRange = 0.75f..3f,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Workout", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(
+                    value = restSeconds,
+                    onValueChange = { restSeconds = it },
+                    label = { Text("Default rest (seconds)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = autoStartRest, onCheckedChange = { autoStartRest = it })
+                    Text("  Auto-start rest timer after each set")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = showRpe, onCheckedChange = { showRpe = it })
+                    Text("  Show RPE column")
+                }
+                Button(onClick = {
+                    scope.launch {
+                        db.settingDao().put(Setting("restSeconds", restSeconds.trim().toIntOrNull()?.toString() ?: "90"))
+                        db.settingDao().put(Setting("autoStartRest", "$autoStartRest"))
+                        db.settingDao().put(Setting("showRpe", "$showRpe"))
+                        status = "Workout settings saved"
+                    }
+                }) { Text("Save Workout Settings") }
+            }
+        }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Goal", style = MaterialTheme.typography.titleMedium)
@@ -140,10 +198,15 @@ fun SettingsScreen(
         }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("AI (OpenAI-compatible: Ollama, OpenRouter…)", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(aiEndpoint, { aiEndpoint = it }, label = { Text("Endpoint (e.g. http://192.168.1.x:11434/v1)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(aiModel, { aiModel = it }, label = { Text("Model (e.g. llama3.1)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(aiKey, { aiKey = it }, label = { Text("API key (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text("AI (photo + text food logging)", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Paste an OpenRouter API key and everything works — endpoint/model below are optional overrides (e.g. local Ollama).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(aiKey, { aiKey = it }, label = { Text("API key") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(aiEndpoint, { aiEndpoint = it }, label = { Text("Endpoint override (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(aiModel, { aiModel = it }, label = { Text("Model override (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Button(onClick = {
                     scope.launch {
                         db.settingDao().put(Setting("aiEndpoint", aiEndpoint.trim()))

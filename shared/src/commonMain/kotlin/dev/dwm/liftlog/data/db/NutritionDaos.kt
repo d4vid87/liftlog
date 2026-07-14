@@ -47,6 +47,9 @@ interface FoodLogDao {
     @Query("SELECT * FROM FoodLog WHERE deletedAt IS NULL AND epochDay BETWEEN :from AND :to")
     suspend fun forRangeOnce(from: Long, to: Long): List<FoodLog>
 
+    @Query("SELECT * FROM FoodLog WHERE deletedAt IS NULL AND foodId = :foodId ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun lastLogFor(foodId: String): FoodLog?
+
     @Query(
         """SELECT l.epochDay AS epochDay, SUM(l.grams * f.kcal / 100.0) AS kcal
            FROM FoodLog l JOIN Food f ON f.id = l.foodId

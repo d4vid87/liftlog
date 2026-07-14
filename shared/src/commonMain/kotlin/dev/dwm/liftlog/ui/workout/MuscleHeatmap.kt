@@ -94,7 +94,7 @@ fun RecoveryCard(db: AppDatabase, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun BodyCanvas(fatigue: Map<Muscle, Double>, front: Boolean, modifier: Modifier) {
+internal fun BodyCanvas(fatigue: Map<Muscle, Double>, front: Boolean, modifier: Modifier) {
     // hot muscles pulse; the whole figure sits on a smooth capsule-limbed silhouette
     val pulse = rememberInfiniteTransition()
     val throb by pulse.animateFloat(

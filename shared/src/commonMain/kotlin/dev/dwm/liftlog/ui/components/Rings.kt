@@ -32,7 +32,11 @@ import dev.dwm.liftlog.ui.Palette
 /** MFP-style ring: Remaining = target − eaten. */
 @Composable
 fun CalorieRing(eaten: Double, target: Double, modifier: Modifier = Modifier) {
-    val remaining = (target - eaten).toInt()
+    // number counts up/down to its value — small dopamine hit
+    val remaining by androidx.compose.animation.core.animateIntAsState(
+        (target - eaten).toInt(),
+        animationSpec = tween(900),
+    )
     val track = MaterialTheme.colorScheme.surfaceVariant
     val over = remaining < 0
     // sweep animates in on load/update — small dopamine hit

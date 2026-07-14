@@ -39,6 +39,11 @@ private data class ChatMessage(val content: String? = null)
 @Serializable
 private data class ChatResponse(val choices: List<ChatChoice> = emptyList())
 
+// Out-of-the-box defaults: paste one OpenRouter key and photo/text food logging works.
+// Endpoint/model settings remain as optional overrides (e.g. local Ollama).
+const val DEFAULT_AI_ENDPOINT = "https://openrouter.ai/api/v1"
+const val DEFAULT_AI_MODEL = "anthropic/claude-haiku-4.5"
+
 /**
  * OpenAI-compatible chat client — works with local Ollama (`http://host:11434/v1`),
  * OpenRouter, etc. Vision via image_url data URI (Ollama vision models supported).
@@ -110,6 +115,17 @@ class AiClient(
         $recentSummary
         """.trimIndent()
     )
+}
+
+/** Build a client from settings, falling back to baked-in defaults. Fails only when a key is required and missing. */
+suspend fun aiClient(db: dev.dwm.liftlog.data.db.AppDatabase): Result<AiClient> {
+    val endpoint = db.settingDao().get("aiEndpoint")?.takeIf { it.isNotBlank() } ?: DEFAULT_AI_ENDPOINT
+    val model = db.settingDao().get("aiModel")?.takeIf { it.isNotBlank() } ?: DEFAULT_AI_MODEL
+    val key = db.settingDao().get("aiApiKey")
+    if (endpoint == DEFAULT_AI_ENDPOINT && key.isNullOrBlank()) {
+        return Result.failure(IllegalStateException("Paste your OpenRouter API key in More → AI (one-time setup)"))
+    }
+    return Result.success(AiClient(httpClient(), endpoint, model, key))
 }
 
 /** Convert an AI-parsed portion to a per-100g Food row plus its logged grams. */

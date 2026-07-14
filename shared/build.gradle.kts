@@ -27,9 +27,12 @@ kotlin {
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
             implementation(libs.ktor.serialization.json)
+            implementation("io.coil-kt.coil3:coil-compose:3.1.0")
+            implementation("io.coil-kt.coil3:coil-network-ktor3:3.1.0")
         }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
+            implementation("androidx.core:core-ktx:1.15.0")
         }
         val desktopMain by getting {
             dependencies {

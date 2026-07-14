@@ -131,6 +131,8 @@ data class RoutineExercise(
     val exerciseId: String,
     val position: Int,
     val sets: Int = 3,
+    val restSeconds: Int? = null,     // null = global default
+    val supersetGroup: Int? = null,   // exercises sharing a group alternate without rest
     val updatedAt: Long = nowMillis(),
     val deletedAt: Long? = null,
 )

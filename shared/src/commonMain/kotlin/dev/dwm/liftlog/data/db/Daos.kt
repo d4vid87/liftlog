@@ -98,6 +98,14 @@ interface WorkoutDao {
            ORDER BY e.name"""
     )
     fun loggedExercises(): Flow<List<Exercise>>
+
+    @Query(
+        """SELECT s.* FROM WorkoutSet s JOIN Workout w ON w.id = s.workoutId
+           WHERE s.exerciseId = :exerciseId AND s.completed AND w.finishedAt IS NOT NULL
+             AND s.deletedAt IS NULL AND w.deletedAt IS NULL
+           ORDER BY w.startedAt DESC, s.setIndex LIMIT 40"""
+    )
+    suspend fun recentSetsFor(exerciseId: String): List<WorkoutSet>
 }
 
 @Dao
@@ -158,6 +166,9 @@ interface RoutineDao {
 
     @Query("SELECT * FROM RoutineExercise WHERE deletedAt IS NULL AND routineId = :routineId ORDER BY position")
     suspend fun exercisesFor(routineId: String): List<RoutineExercise>
+
+    @Query("SELECT * FROM Routine WHERE deletedAt IS NULL AND name = :name LIMIT 1")
+    suspend fun byName(name: String): Routine?
 }
 
 data class E1rmPoint(val time: Long, val e1rm: Double)

@@ -23,9 +23,27 @@ class MainActivity : ComponentActivity() {
             photoContinuation = null
         }
 
+    private val requestNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
+    private var speechContinuation: ((String?) -> Unit)? = null
+
+    private val recognizeSpeech =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val text = result.data
+                ?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            speechContinuation?.invoke(text)
+            speechContinuation = null
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        dev.dwm.liftlog.ui.appContext = applicationContext
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            requestNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
         val db = createDatabase(applicationContext)
         val scanner = GmsBarcodeScanning.getClient(this)
         setContent {
@@ -53,6 +71,25 @@ class MainActivity : ComponentActivity() {
                         val out = ByteArrayOutputStream()
                         it.compress(Bitmap.CompressFormat.JPEG, 80, out)
                         Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+                    }
+                },
+                voiceInput = {
+                    suspendCancellableCoroutine { cont ->
+                        speechContinuation = { cont.resume(it) }
+                        runCatching {
+                            recognizeSpeech.launch(
+                                android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                    putExtra(
+                                        android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                                        android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+                                    )
+                                    putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Say e.g. \"225 for 8\"")
+                                }
+                            )
+                        }.onFailure {
+                            speechContinuation = null
+                            cont.resume(null)
+                        }
                     }
                 },
             )
