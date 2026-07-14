@@ -1,5 +1,11 @@
 package dev.dwm.liftlog.ui.workout
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -48,6 +54,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -74,6 +81,7 @@ import dev.dwm.liftlog.domain.lbToKg
 import dev.dwm.liftlog.domain.platesPerSide
 import dev.dwm.liftlog.ui.Palette
 import dev.dwm.liftlog.ui.collectAsStateList
+import dev.dwm.liftlog.ui.playBeep
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -516,6 +524,7 @@ fun ActiveWorkoutScreen(
                     },
                     onComplete = { set ->
                         scope.launch { db.workoutDao().updateSet(set.copy(completed = true, updatedAt = now())) }
+                        playBeep()
                         restEndsAt = now() + 90_000
                     },
                     onDelete = { scope.launch { db.workoutDao().deleteSet(it.id) } },
@@ -574,6 +583,15 @@ fun ActiveWorkoutScreen(
                         fresh = true
                     },
                     onDone = { editing = null },
+                    onCompleteSet = {
+                        scope.launch { db.workoutDao().updateSet(set.copy(completed = true, updatedAt = now())) }
+                        playBeep()
+                        restEndsAt = now() + 90_000
+                        // jump to the next uncompleted set's weight, or hide keypad
+                        val next = sets.firstOrNull { !it.completed && it.id != set.id }
+                        editing = next?.let { it.id to SetField.WEIGHT }
+                        fresh = true
+                    },
                 )
             }
         }
@@ -605,11 +623,17 @@ private fun WorkoutHeader(workout: Workout, onFinish: () -> Unit, onDiscard: () 
             }
         }
         TextButton(onClick = onDiscard) { Text("Discard", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        Button(
-            onClick = onFinish,
-            colors = ButtonDefaults.buttonColors(containerColor = Palette.Success, contentColor = Color.White),
-            shape = RoundedCornerShape(10.dp),
-        ) { Text("Finish", fontWeight = FontWeight.Bold) }
+        Box(
+            Modifier
+                .background(
+                    androidx.compose.ui.graphics.Brush.horizontalGradient(
+                        listOf(Color(0xFF4CAF50), Color(0xFF2FB86A), Color(0xFF1E9E86))
+                    ),
+                    RoundedCornerShape(12.dp),
+                )
+                .clickable(onClick = onFinish)
+                .padding(horizontal = 22.dp, vertical = 12.dp),
+        ) { Text("Finish", fontWeight = FontWeight.Bold, color = Color.White) }
     }
 }
 
@@ -640,8 +664,16 @@ private fun WorkoutCompleteDialog(s: WorkoutSummary, onDone: () -> Unit) {
                     StatBlock("${s.setCount}", "sets")
                 }
                 if (s.prs.isNotEmpty()) {
+                    val pulse = rememberInfiniteTransition()
+                    val scale by pulse.animateFloat(
+                        1f, 1.35f,
+                        animationSpec = infiniteRepeatable(tween(500), RepeatMode.Reverse),
+                    )
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Icon(Icons.Default.EmojiEvents, null, tint = Palette.Pr)
+                        Icon(
+                            Icons.Default.EmojiEvents, null, tint = Palette.Pr,
+                            modifier = Modifier.graphicsLayer(scaleX = scale, scaleY = scale),
+                        )
                         Text("${s.prs.size} PR${if (s.prs.size > 1) "s" else ""}!", fontWeight = FontWeight.Bold)
                     }
                     s.prs.forEach {
@@ -676,7 +708,35 @@ private fun ExerciseCard(
     onDelete: (WorkoutSet) -> Unit,
     onAddSet: (WorkoutSet) -> Unit,
 ) {
-    Card {
+    // finished exercises collapse to a slim green row; tap to reopen
+    val allDone = sets.isNotEmpty() && sets.all { it.completed }
+    var reopened by remember(allDone) { mutableStateOf(false) }
+    if (allDone && !reopened) {
+        Card(Modifier.fillMaxWidth().animateContentSize().clickable { reopened = true }) {
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(Palette.Success.copy(alpha = 0.12f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(Icons.Default.Check, null, tint = Palette.Success)
+                Text(
+                    exercise?.name ?: "…",
+                    Modifier.weight(1f),
+                    fontWeight = FontWeight.Bold,
+                    color = Palette.Success,
+                )
+                Text(
+                    "${sets.size} sets done",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        return
+    }
+    Card(Modifier.animateContentSize()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
                 exercise?.name ?: "…",
@@ -827,6 +887,7 @@ private fun NumericKeypad(
     onBackspace: () -> Unit,
     onNext: () -> Unit,
     onDone: () -> Unit,
+    onCompleteSet: () -> Unit,
 ) {
     Column(
         Modifier.fillMaxWidth()
@@ -834,25 +895,33 @@ private fun NumericKeypad(
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        listOf("123", "456", "789").forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                row.forEach { c -> KeypadKey("$c", Modifier.weight(1f)) { onKey(c) } }
-                when (row) {
-                    "123" -> KeypadKey("Next", Modifier.weight(1f), accent = true, onClick = onNext)
-                    "456" -> Box(
-                        Modifier.weight(1f).height(46.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-                            .clickable(onClick = onBackspace),
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.AutoMirrored.Filled.Backspace, "backspace") }
-                    else -> KeypadKey("Done", Modifier.weight(1f), accent = true, onClick = onDone)
-                }
-            }
+        // strict 4-column grid: digits left, actions right
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            "123".forEach { c -> KeypadKey("$c", Modifier.weight(1f)) { onKey(c) } }
+            KeypadKey("⌫", Modifier.weight(1f)) { onBackspace() }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            "456".forEach { c -> KeypadKey("$c", Modifier.weight(1f)) { onKey(c) } }
+            KeypadKey("Next", Modifier.weight(1f), accent = true, onClick = onNext)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            "789".forEach { c -> KeypadKey("$c", Modifier.weight(1f)) { onKey(c) } }
+            KeypadKey("Hide", Modifier.weight(1f), accent = true, onClick = onDone)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             KeypadKey(".", Modifier.weight(1f)) { onKey('.') }
-            KeypadKey("0", Modifier.weight(2f)) { onKey('0') }
-            Box(Modifier.weight(1f))
+            KeypadKey("0", Modifier.weight(1f)) { onKey('0') }
+            Box(
+                Modifier.weight(2f).height(52.dp)
+                    .background(Palette.Success, RoundedCornerShape(10.dp))
+                    .clickable(onClick = onCompleteSet),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(Icons.Default.Check, null, tint = Color.White)
+                    Text("Complete Set", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            }
         }
     }
 }
@@ -860,38 +929,74 @@ private fun NumericKeypad(
 @Composable
 private fun KeypadKey(label: String, modifier: Modifier = Modifier, accent: Boolean = false, onClick: () -> Unit) {
     Box(
-        modifier.height(46.dp)
+        modifier.height(52.dp)
             .background(
                 if (accent) Palette.Calories.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant,
-                RoundedCornerShape(8.dp),
+                RoundedCornerShape(10.dp),
             )
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text(label, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
 private fun RestTimerBar(endsAt: Long, onDone: () -> Unit) {
     var remaining by remember(endsAt) { mutableStateOf(endsAt - now()) }
+    var over by remember(endsAt) { mutableStateOf(false) }
     LaunchedEffect(endsAt) {
         while (remaining > 0) {
-            delay(250)
+            delay(200)
             remaining = endsAt - now()
         }
+        over = true
+        repeat(3) {
+            playBeep()
+            delay(350)
+        }
+        delay(1500)
         onDone()
     }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Rest ${(remaining / 1000).coerceAtLeast(0)}s", style = MaterialTheme.typography.titleSmall, color = Palette.Calories)
-            TextButton(onClick = onDone) { Text("Skip") }
-        }
-        LinearProgressIndicator(
-            progress = { (remaining / 90_000f).coerceIn(0f, 1f) },
-            color = Palette.Calories,
-            modifier = Modifier.fillMaxWidth(),
+    if (over) {
+        // flashing GO banner while the beeps play
+        val flash = rememberInfiniteTransition()
+        val alpha by flash.animateFloat(
+            0.55f, 1f,
+            animationSpec = infiniteRepeatable(tween(250), RepeatMode.Reverse),
         )
+        Box(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                .background(Palette.Success.copy(alpha = alpha), RoundedCornerShape(12.dp))
+                .padding(vertical = 10.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("REST OVER — GO!", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+        }
+    } else {
+        val secs = (remaining / 1000).coerceAtLeast(0)
+        val urgent = secs <= 10
+        val barColor = if (urgent) Palette.Protein else Palette.Calories
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Rest ${secs / 60}:${(secs % 60).toString().padStart(2, '0')}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = barColor,
+                )
+                TextButton(onClick = onDone) { Text("Skip") }
+            }
+            LinearProgressIndicator(
+                progress = { (remaining / 90_000f).coerceIn(0f, 1f) },
+                color = barColor,
+                modifier = Modifier.fillMaxWidth().height(8.dp),
+            )
+        }
     }
 }
 
