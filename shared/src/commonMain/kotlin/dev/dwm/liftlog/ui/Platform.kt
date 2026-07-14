@@ -10,3 +10,14 @@ expect fun notifyRest(endsAt: Long?)
 
 /** High-priority "rest over" notification with sound. No-op on desktop. */
 expect fun notifyRestOver()
+
+enum class Tone { Low, High, Tick }
+
+/** Short distinct pitch for tempo metronome phases. Falls back to beep on desktop. */
+expect fun playTone(t: Tone)
+
+/** Loud alarm-stream blast for rest-over. Falls back to beep on desktop. */
+expect fun playAlarm()
+
+/** Text-to-speech announcement, best-effort. No-op on desktop. */
+expect fun speak(text: String)

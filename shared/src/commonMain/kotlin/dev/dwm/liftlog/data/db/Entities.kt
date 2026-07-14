@@ -133,6 +133,7 @@ data class RoutineExercise(
     val sets: Int = 3,
     val restSeconds: Int? = null,     // null = global default
     val supersetGroup: Int? = null,   // exercises sharing a group alternate without rest
+    val tempo: String? = null,        // "3-1-1-0" ecc-pause-con-pause seconds
     val updatedAt: Long = nowMillis(),
     val deletedAt: Long? = null,
 )

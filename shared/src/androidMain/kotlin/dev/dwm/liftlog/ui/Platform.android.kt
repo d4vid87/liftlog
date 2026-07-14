@@ -38,6 +38,42 @@ actual fun haptic(kind: Haptic) {
     }
 }
 
+// ponytail: single loud generator reused for alarm + tempo tones; recreated never, fine for app lifetime
+private val alarmTone by lazy {
+    runCatching { android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100) }.getOrNull()
+}
+private var tts: android.speech.tts.TextToSpeech? = null
+private var ttsReady = false
+
+actual fun playTone(t: Tone) {
+    runCatching {
+        val tone = when (t) {
+            Tone.Low -> android.media.ToneGenerator.TONE_DTMF_1
+            Tone.High -> android.media.ToneGenerator.TONE_DTMF_9
+            Tone.Tick -> android.media.ToneGenerator.TONE_PROP_BEEP
+        }
+        alarmTone?.startTone(tone, 150)
+    }
+}
+
+actual fun playAlarm() {
+    runCatching { alarmTone?.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 900) }
+}
+
+actual fun speak(text: String) {
+    val ctx = appContext ?: return
+    runCatching {
+        if (tts == null) {
+            tts = android.speech.tts.TextToSpeech(ctx) { status ->
+                ttsReady = status == android.speech.tts.TextToSpeech.SUCCESS
+                if (ttsReady) tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "overload")
+            }
+        } else if (ttsReady) {
+            tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "overload")
+        }
+    }
+}
+
 private fun manager(): NotificationManager? =
     appContext?.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
 

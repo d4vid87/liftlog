@@ -54,7 +54,8 @@ import dev.dwm.liftlog.domain.computeTdee
 import dev.dwm.liftlog.domain.kgToLbDisplay
 import dev.dwm.liftlog.ui.Palette
 import dev.dwm.liftlog.ui.Tab
-import dev.dwm.liftlog.ui.components.CalorieRing
+import dev.dwm.liftlog.ui.components.FlatBar
+import dev.dwm.liftlog.ui.components.HeroNumber
 import dev.dwm.liftlog.ui.components.MacroBar
 import dev.dwm.liftlog.ui.nutrition.todayEpochDay
 import dev.dwm.liftlog.ui.workout.clean
@@ -62,7 +63,12 @@ import dev.dwm.liftlog.ui.collectAsStateList
 
 /** MFP-style dashboard: calories ring, macros, weight trend, quick "+" actions. */
 @Composable
-fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab) -> Unit) {
+fun DashboardScreen(
+    db: AppDatabase,
+    modifier: Modifier = Modifier,
+    onStartWorkout: (() -> Unit)? = null,
+    onGoTo: (Tab) -> Unit,
+) {
     val today = remember { todayEpochDay() }
     val logs by remember { db.foodLogDao().forDay(today) }.collectAsStateList()
     var kcal by remember { mutableStateOf(0.0) }
@@ -80,6 +86,7 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
     var streakWeeks by remember { mutableStateOf(0) }
     var insights by remember { mutableStateOf<List<String>>(emptyList()) }
     var recap by remember { mutableStateOf<WeekRecap?>(null) }
+    var nextWorkoutName by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(logs) {
         var k = 0.0; var p = 0.0; var c = 0.0; var f = 0.0
@@ -163,6 +170,17 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
             list.add("Weight ${if (d >= 0) "+" else ""}${d.clean()} lb over 7 days")
         }
         insights = list
+
+        // next workout for the START CTA (hidden once trained today)
+        nextWorkoutName = if ((today) in workoutDays) null else run {
+            val program = db.programDao().programs().first().firstOrNull()
+            if (program != null) {
+                val days = db.programDao().daysFor(program.id)
+                days.getOrNull(program.currentDayIndex % days.size.coerceAtLeast(1))?.name ?: "Workout"
+            } else {
+                db.routineDao().routines().first().firstOrNull()?.name
+            }
+        }
     }
 
     Box(modifier.fillMaxSize()) {
@@ -192,33 +210,38 @@ fun DashboardScreen(db: AppDatabase, modifier: Modifier = Modifier, onGoTo: (Tab
                 }
             }
             WeekDots(workoutDays, intakes.map { it.epochDay }.toSet(), today)
-            recap?.let { WeeklyRecapCard(it) }
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Calories", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (nextWorkoutName != null && onStartWorkout != null) {
+                Row(
+                    Modifier.fillMaxWidth()
+                        .background(Palette.Success, RoundedCornerShape(14.dp))
+                        .clickable(onClick = onStartWorkout)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
-                        "Remaining = Target − Food",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        "START ${nextWorkoutName!!.uppercase()}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Black,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        CalorieRing(eaten = kcal, target = targetKcal, modifier = Modifier.size(130.dp))
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            LabeledValue("Target", "${targetKcal.toInt()}")
-                            LabeledValue("Food", "${kcal.toInt()}")
-                            tdee?.let { LabeledValue("Expenditure", "~${it.tdeeKcal.toInt()}") }
-                        }
-                    }
+                    Text("→", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.Black)
                 }
             }
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Macros", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    val carbsPct = (100.0 - proteinPct - fatPct).coerceAtLeast(0.0)
-                    MacroBar("Protein", protein, targetKcal * proteinPct / 100 / 4, Palette.Protein)
-                    MacroBar("Carbs", carbs, targetKcal * carbsPct / 100 / 4, Palette.Carbs)
-                    MacroBar("Fat", fat, targetKcal * fatPct / 100 / 9, Palette.Fat)
+            recap?.let { WeeklyRecapCard(it) }
+            // hero: one big number + macro bars, flat
+            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                HeroNumber((targetKcal - kcal).toInt(), "kcal left", Palette.Calories, Modifier.fillMaxWidth())
+                FlatBar((kcal / targetKcal).toFloat(), Palette.Calories)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    LabeledValue("Target", "${targetKcal.toInt()}")
+                    LabeledValue("Food", "${kcal.toInt()}")
+                    tdee?.let { LabeledValue("Burn", "~${it.tdeeKcal.toInt()}") }
                 }
+                val carbsPct = (100.0 - proteinPct - fatPct).coerceAtLeast(0.0)
+                MacroBar("Protein", protein, targetKcal * proteinPct / 100 / 4, Palette.Protein)
+                MacroBar("Carbs", carbs, targetKcal * carbsPct / 100 / 4, Palette.Carbs)
+                MacroBar("Fat", fat, targetKcal * fatPct / 100 / 9, Palette.Fat)
             }
             if (insights.isNotEmpty()) InsightsCard(insights)
             WeightTrendCard(weights, today)

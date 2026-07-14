@@ -82,8 +82,13 @@ fun App(
     val off = remember { OpenFoodFacts(httpClient()) }
     var tab by remember { mutableStateOf(Tab.Dashboard) }
     var workoutRefresh by remember { mutableIntStateOf(0) }
+    var onboarded by remember { mutableStateOf<Boolean?>(null) }
+    var pendingQuickStart by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) { seedExercisesIfEmpty(db) }
+    LaunchedEffect(Unit) {
+        seedExercisesIfEmpty(db)
+        onboarded = db.settingDao().get("onboarded") == "1"
+    }
 
     // coil image loader wired to ktor for exercise thumbnails
     coil3.compose.setSingletonImageLoaderFactory { ctx ->
@@ -94,17 +99,31 @@ fun App(
 
     LiftLogTheme {
         RestTimerEngine()
+        if (onboarded == false) {
+            dev.dwm.liftlog.ui.onboarding.OnboardingWizard(db) { onboarded = true }
+        }
         val bg = Brush.verticalGradient(
             listOf(Color(0xFF0D1524), MaterialTheme.colorScheme.background),
         )
         @Composable
         fun content(modifier: Modifier) {
             when (tab) {
-                Tab.Dashboard -> DashboardScreen(db, modifier) {
+                Tab.Dashboard -> DashboardScreen(
+                    db, modifier,
+                    onStartWorkout = {
+                        pendingQuickStart = true
+                        workoutRefresh++
+                        tab = Tab.Workout
+                    },
+                ) {
                     if (it == Tab.Workout) workoutRefresh++
                     tab = it
                 }
-                Tab.Workout -> WorkoutTab(db, modifier, refreshKey = workoutRefresh, voiceInput = voiceInput)
+                Tab.Workout -> WorkoutTab(
+                    db, modifier, refreshKey = workoutRefresh, voiceInput = voiceInput,
+                    quickStart = pendingQuickStart,
+                    onQuickStartConsumed = { pendingQuickStart = false },
+                )
                 Tab.Nutrition -> NutritionScreen(db, off, modifier, scanBarcode, takePhoto)
                 Tab.History -> HistoryScreen(db, modifier)
                 Tab.Settings -> SettingsScreen(db, modifier, saveExport, uiScale, onUiScale)
@@ -173,10 +192,12 @@ private fun RestTimerEngine() {
             if (nowMillis() >= (RestTimer.endsAt ?: return@LaunchedEffect)) {
                 RestTimer.expire()
                 notifyRestOver()
-                repeat(3) {
-                    playBeep()
+                playAlarm()
+                speak("Rest over. Go!")
+                repeat(2) {
                     haptic(Haptic.Buzz)
-                    delay(350)
+                    delay(400)
+                    playBeep()
                 }
             }
             delay(200)

@@ -16,6 +16,13 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
     }
 }
 
+// v7: per-exercise lifting tempo — additive
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL("ALTER TABLE RoutineExercise ADD COLUMN tempo TEXT")
+    }
+}
+
 @Database(
     entities = [
         Exercise::class, Workout::class, WorkoutSet::class,
@@ -23,7 +30,7 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
         Food::class, FoodLog::class, WeightEntry::class, Setting::class,
         GroceryItem::class, Routine::class, RoutineExercise::class,
     ],
-    version = 6,
+    version = 7,
 )
 @ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -82,11 +83,14 @@ import dev.dwm.liftlog.domain.kgToLb
 import dev.dwm.liftlog.domain.kgToLbDisplay
 import dev.dwm.liftlog.domain.lbToKg
 import dev.dwm.liftlog.domain.platesPerSide
+import dev.dwm.liftlog.ui.GlobalRestBar
 import dev.dwm.liftlog.ui.Haptic
 import dev.dwm.liftlog.ui.Palette
+import dev.dwm.liftlog.ui.Tone
 import dev.dwm.liftlog.ui.collectAsStateList
 import dev.dwm.liftlog.ui.haptic
 import dev.dwm.liftlog.ui.playBeep
+import dev.dwm.liftlog.ui.playTone
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -122,10 +126,26 @@ fun WorkoutTab(
     modifier: Modifier = Modifier,
     refreshKey: Int = 0,
     voiceInput: (suspend () -> String?)? = null,
+    quickStart: Boolean = false,
+    onQuickStartConsumed: () -> Unit = {},
 ) {
     var activeWorkout by remember { mutableStateOf<Workout?>(null) }
 
     LaunchedEffect(refreshKey) { activeWorkout = db.workoutDao().activeWorkout() }
+    // 1-tap start from Dashboard: next program day, else first routine
+    LaunchedEffect(quickStart) {
+        if (!quickStart) return@LaunchedEffect
+        onQuickStartConsumed()
+        if (db.workoutDao().activeWorkout() != null) return@LaunchedEffect
+        val program = db.programDao().programs().first().firstOrNull()
+        if (program != null) {
+            startProgramWorkout(db, program)?.let { activeWorkout = it }
+        } else {
+            db.routineDao().routines().first().firstOrNull()?.let {
+                activeWorkout = startRoutineWorkout(db, it)
+            }
+        }
+    }
 
     val workout = activeWorkout
     if (workout == null) {
@@ -218,36 +238,34 @@ private fun RoutineCard(
         count = names.size
         preview = names.joinToString(" · ")
     }
-    // Boostcamp day card: numbered coral badge, name + exercise preview, Start pill
-    Card(Modifier.fillMaxWidth().clickable(onClick = onEdit)) {
-        Row(
-            Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Box(
-                Modifier.size(40.dp).background(Palette.Boost.copy(alpha = 0.18f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) { Text("$index", color = Palette.Boost, fontWeight = FontWeight.Bold) }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(routine.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    if (preview.isBlank()) "Tap to add exercises" else "$count exercises · $preview",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                )
-            }
-            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.Delete, "delete routine", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Box(
-                Modifier.background(Palette.Boost, RoundedCornerShape(20.dp))
-                    .clickable(onClick = onStart)
-                    .padding(horizontal = 18.dp, vertical = 10.dp),
-            ) { Text("Start", color = Color.White, fontWeight = FontWeight.Bold) }
+    // flat numbered row: number • name • preview • Start pill (row tap = edit)
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onEdit).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            Modifier.size(40.dp).background(Palette.Success.copy(alpha = 0.18f), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { Text("$index", color = Palette.Success, fontWeight = FontWeight.Bold) }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(routine.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                if (preview.isBlank()) "Tap to add exercises" else "$count exercises · $preview",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
         }
+        IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Default.Delete, "delete routine", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Box(
+            Modifier.background(Palette.Success, RoundedCornerShape(20.dp))
+                .clickable(onClick = onStart)
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+        ) { Text("Start", color = Color.Black, fontWeight = FontWeight.Bold) }
     }
 }
 
@@ -257,9 +275,11 @@ internal data class EditorRow(
     val sets: Int,
     val restSeconds: Int? = null,
     val linked: Boolean = false, // superset with previous row
+    val tempo: String? = null,   // "3-1-1-0" ecc-pause-con-pause
 )
 
 private val restChoices = listOf(null, 60, 90, 120, 180)
+private val tempoChoices = listOf(null, "3-1-1-0", "4-0-1-0", "2-0-2-0")
 
 /** Consecutive linked rows share a superset group id (chain-start index); solo rows get null. */
 internal fun supersetGroups(rows: List<EditorRow>): List<Int?> {
@@ -291,6 +311,7 @@ private fun RoutineEditorDialog(db: AppDatabase, existing: Routine?, onClose: ()
                     EditorRow(
                         re.exerciseId, it.name, re.sets, re.restSeconds,
                         linked = re.supersetGroup != null && re.supersetGroup == res.getOrNull(i - 1)?.supersetGroup,
+                        tempo = re.tempo,
                     )
                 }
             }
@@ -321,7 +342,7 @@ private fun RoutineEditorDialog(db: AppDatabase, existing: Routine?, onClose: ()
                     db.routineDao().upsertExercise(
                         RoutineExercise(
                             routineId = routine.id, exerciseId = r.exerciseId, position = i,
-                            sets = r.sets, restSeconds = r.restSeconds, supersetGroup = groups[i],
+                            sets = r.sets, restSeconds = r.restSeconds, supersetGroup = groups[i], tempo = r.tempo,
                         )
                     )
                 }
@@ -374,6 +395,10 @@ private fun RoutineEditorDialog(db: AppDatabase, existing: Routine?, onClose: ()
                                 val next = restChoices[(restChoices.indexOf(row.restSeconds) + 1) % restChoices.size]
                                 rows = rows.toMutableList().also { it[i] = row.copy(restSeconds = next) }
                             }) { Text("Rest: ${row.restSeconds?.let { s -> "${s}s" } ?: "default"}") }
+                            TextButton(onClick = {
+                                val next = tempoChoices[(tempoChoices.indexOf(row.tempo) + 1) % tempoChoices.size]
+                                rows = rows.toMutableList().also { it[i] = row.copy(tempo = next) }
+                            }) { Text("Tempo: ${row.tempo ?: "off"}") }
                             if (i > 0) {
                                 TextButton(onClick = {
                                     rows = rows.toMutableList().also { it[i] = row.copy(linked = !row.linked) }
@@ -445,44 +470,47 @@ private fun ProgramCard(db: AppDatabase, program: Program, onStarted: (Workout) 
     val dayNum = (program.currentDayIndex % n) + 1
     val today = days.getOrNull(program.currentDayIndex % n)
 
-    // Boostcamp hero: coral gradient card with cycle progress + big start pill
+    // hero START block: whole card is one tap to start
     Box(
         Modifier.fillMaxWidth()
             .background(
                 androidx.compose.ui.graphics.Brush.horizontalGradient(
                     listOf(Color(0xFF00E676), Color(0xFF00B0FF)),
                 ),
-                RoundedCornerShape(16.dp),
+                RoundedCornerShape(20.dp),
             )
-            .padding(16.dp),
+            .clickable { scope.launch { startProgramWorkout(db, program)?.let(onStarted) } }
+            .padding(20.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(program.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text(
-                        "Next: ${today?.name ?: "…"} · Day $dayNum of ${days.size}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.85f),
-                    )
-                }
-                IconButton(onClick = { scope.launch { db.programDao().deleteProgram(program.id) } }) {
-                    Icon(Icons.Default.Delete, "delete program", tint = Color.White.copy(alpha = 0.7f))
+                Text(
+                    "START",
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Black.copy(alpha = 0.65f),
+                )
+                IconButton(onClick = { scope.launch { db.programDao().deleteProgram(program.id) } }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Delete, "delete program", tint = Color.Black.copy(alpha = 0.45f))
                 }
             }
+            Text(
+                (today?.name ?: "Workout").uppercase(),
+                style = MaterialTheme.typography.displaySmall,
+                color = Color.Black,
+            )
+            Text(
+                "${program.name} · Day $dayNum of ${days.size}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.Black.copy(alpha = 0.65f),
+            )
             LinearProgressIndicator(
                 progress = { dayNum / n.toFloat() },
-                color = Color.White,
-                trackColor = Color.White.copy(alpha = 0.25f),
+                color = Color.Black,
+                trackColor = Color.Black.copy(alpha = 0.2f),
                 modifier = Modifier.fillMaxWidth().height(6.dp),
             )
-            Box(
-                Modifier.fillMaxWidth()
-                    .background(Color.White, RoundedCornerShape(24.dp))
-                    .clickable { scope.launch { startProgramWorkout(db, program)?.let(onStarted) } }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center,
-            ) { Text("Start ${today?.name ?: "Workout"}", color = Color(0xFF006B36), fontWeight = FontWeight.Bold) }
         }
     }
 }
@@ -557,6 +585,8 @@ fun ActiveWorkoutScreen(
     var editing by remember { mutableStateOf<Pair<String, SetField>?>(null) }
     var fresh by remember { mutableStateOf(true) }
     var historyFor by remember { mutableStateOf<Exercise?>(null) }
+    var restPeeked by remember { mutableStateOf(false) }
+    var tempoFor by remember { mutableStateOf<String?>(null) } // exerciseId with metronome running
 
     // workout prefs + per-exercise routine metadata (rest, superset)
     var defaultRest by remember { mutableStateOf(90) }
@@ -574,7 +604,20 @@ fun ActiveWorkoutScreen(
     }
 
     fun completeSet(set: WorkoutSet) {
-        scope.launch { db.workoutDao().updateSet(set.copy(completed = true, updatedAt = now())) }
+        // one-tap complete: empty fields fall back to previous-session values
+        var s = set
+        if (s.weightKg == 0.0 || s.reps == 0) {
+            val idx = sets.filter { it.exerciseId == s.exerciseId }
+                .sortedBy { it.setIndex }.indexOfFirst { it.id == s.id }
+            previous[s.exerciseId]?.getOrNull(idx)?.let { prev ->
+                s = s.copy(
+                    weightKg = if (s.weightKg == 0.0) prev.weightKg else s.weightKg,
+                    reps = if (s.reps == 0) prev.reps else s.reps,
+                )
+            }
+        }
+        scope.launch { db.workoutDao().updateSet(s.copy(completed = true, updatedAt = now())) }
+        restPeeked = false
         playBeep()
         haptic(Haptic.Click)
         if (!autoStartRest) return
@@ -606,15 +649,26 @@ fun ActiveWorkoutScreen(
     if (showPicker) {
         ExercisePickerDialog(db, onDismiss = { showPicker = false }) { exercise ->
             scope.launch {
-                db.workoutDao().insertSet(
-                    WorkoutSet(workoutId = workout.id, exerciseId = exercise.id, setIndex = 0, weightKg = 0.0, reps = 0)
-                )
+                // seed from previous session so mid-workout adds are one-tap too
+                val prev = db.workoutDao().previousSets(exercise.id, workout.id)
+                if (prev.isEmpty()) {
+                    db.workoutDao().insertSet(
+                        WorkoutSet(workoutId = workout.id, exerciseId = exercise.id, setIndex = 0, weightKg = 0.0, reps = 0)
+                    )
+                } else {
+                    prev.forEachIndexed { i, p ->
+                        db.workoutDao().insertSet(
+                            WorkoutSet(workoutId = workout.id, exerciseId = exercise.id, setIndex = i, weightKg = p.weightKg, reps = p.reps)
+                        )
+                    }
+                }
             }
             showPicker = false
         }
     }
 
-    Column(modifier.fillMaxSize()) {
+    Box(modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize()) {
         WorkoutHeader(
             workout = workout,
             onFinish = {
@@ -658,7 +712,8 @@ fun ActiveWorkoutScreen(
                 }
             },
         )
-        RestRing()
+        // slim bar while the takeover is peeked away
+        if (RestTimer.endsAt != null && restPeeked) GlobalRestBar()
         LazyColumn(
             Modifier.weight(1f).padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -673,6 +728,9 @@ fun ActiveWorkoutScreen(
                     editing = editing,
                     showRpe = showRpe,
                     supersetGroup = routineMeta[exerciseId]?.supersetGroup,
+                    tempo = routineMeta[exerciseId]?.tempo,
+                    tempoOn = tempoFor == exerciseId,
+                    onTempoToggle = { tempoFor = if (tempoFor == exerciseId) null else exerciseId },
                     onNameClick = { exercises[exerciseId]?.let { historyFor = it } },
                     onEdit = { setId, field ->
                         editing = setId to field
@@ -765,6 +823,20 @@ fun ActiveWorkoutScreen(
                 )
             }
         }
+    }
+    if (RestTimer.endsAt != null && !restPeeked) {
+        val next = sets.firstOrNull { !it.completed }
+        val nextLabel = next?.let { n ->
+            val exSets = sets.filter { it.exerciseId == n.exerciseId }.sortedBy { it.setIndex }
+            val idx = exSets.indexOfFirst { it.id == n.id }
+            val prev = previous[n.exerciseId]?.getOrNull(idx)
+            val w = (if (n.weightKg > 0) n.weightKg else prev?.weightKg ?: 0.0).kgToLbDisplay().clean()
+            val r = if (n.reps > 0) n.reps else prev?.reps ?: 0
+            "${exercises[n.exerciseId]?.name ?: "…"} · set ${idx + 1} of ${exSets.size}\n$w lb × $r" +
+                (prev?.let { p -> "  (last: ${p.weightKg.kgToLbDisplay().clean()}×${p.reps})" } ?: "")
+        }
+        RestTakeover(nextLabel) { restPeeked = true }
+    }
     }
 }
 
@@ -927,6 +999,9 @@ private fun ExerciseCard(
     editing: Pair<String, SetField>?,
     showRpe: Boolean,
     supersetGroup: Int?,
+    tempo: String?,
+    tempoOn: Boolean,
+    onTempoToggle: () -> Unit,
     onNameClick: () -> Unit,
     onEdit: (String, SetField) -> Unit,
     onComplete: (WorkoutSet) -> Unit,
@@ -978,7 +1053,17 @@ private fun ExerciseCard(
                     if (supersetGroup != null) {
                         Text("SUPERSET", style = MaterialTheme.typography.labelSmall, color = Palette.Volt, fontWeight = FontWeight.Bold)
                     }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = onTempoToggle) {
+                        Text(
+                            if (tempoOn) "TEMPO ■" else "TEMPO ▶",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (tempoOn) Palette.Protein else Palette.Volt,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
                 }
+                if (tempoOn) TempoBar(tempo ?: "3-1-1-0", onStop = onTempoToggle)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Set", Modifier.weight(0.5f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("Previous", Modifier.weight(1.1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
@@ -1227,9 +1312,9 @@ private fun KeypadKey(label: String, modifier: Modifier = Modifier, accent: Bool
     }
 }
 
-/** Big rest countdown ring on the workout screen; display-only (App's engine owns side effects). */
+/** Full-screen rest takeover: giant countdown, ±15/Skip, next-set preview. Display-only. */
 @Composable
-private fun RestRing() {
+private fun RestTakeover(nextLabel: String?, onPeek: () -> Unit) {
     val endsAt = RestTimer.endsAt ?: return
     var tick by remember { mutableStateOf(now()) }
     LaunchedEffect(endsAt) {
@@ -1238,57 +1323,118 @@ private fun RestRing() {
             delay(200)
         }
     }
-    if (RestTimer.over) {
-        val flash = rememberInfiniteTransition()
-        val alpha by flash.animateFloat(
-            0.55f, 1f,
-            animationSpec = infiniteRepeatable(tween(300), RepeatMode.Reverse),
-        )
-        Box(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
-                .background(Palette.Success.copy(alpha = alpha), RoundedCornerShape(12.dp))
-                .clickable { RestTimer.clear() }
-                .padding(vertical = 12.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text("REST OVER — GO!  (tap)", color = Color.Black, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-        }
-        return
-    }
+    val over = RestTimer.over
+    val flash = rememberInfiniteTransition()
+    val flashAlpha by flash.animateFloat(
+        0.55f, 1f,
+        animationSpec = infiniteRepeatable(tween(300), RepeatMode.Reverse),
+    )
     val remaining = (endsAt - tick).coerceAtLeast(0)
     val secs = remaining / 1000
-    val frac = (remaining / RestTimer.durationMs.toFloat()).coerceIn(0f, 1f)
     val urgent = secs <= 10
-    val ringColor = if (urgent) Palette.Protein else Palette.Volt
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    val color = if (over) Palette.Success else if (urgent) Palette.Protein else Palette.Volt
+    Column(
+        Modifier.fillMaxSize()
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.97f))
+            .clickable { if (over) RestTimer.clear() else onPeek() }
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Box(Modifier.size(84.dp), contentAlignment = Alignment.Center) {
-            androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
-                val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = 14f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                val inset = 8f
-                val arcSize = androidx.compose.ui.geometry.Size(size.width - 2 * inset, size.height - 2 * inset)
-                val tl = Offset(inset, inset)
-                drawArc(Color(0xFF1C2536), -90f, 360f, false, tl, arcSize, style = stroke)
-                drawArc(ringColor, -90f, 360f * frac, false, tl, arcSize, style = stroke)
-            }
+        if (over) {
+            Text(
+                "GO!",
+                style = MaterialTheme.typography.displayLarge,
+                color = Palette.Success.copy(alpha = flashAlpha),
+            )
+            Text("tap anywhere", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            Text("REST", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 "${secs / 60}:${(secs % 60).toString().padStart(2, '0')}",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = ringColor,
+                style = MaterialTheme.typography.displayLarge,
+                color = color,
             )
-        }
-        Column {
-            Text("REST", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row {
-                TextButton(onClick = { RestTimer.add(-15) }) { Text("−15") }
-                TextButton(onClick = { RestTimer.add(15) }) { Text("+15") }
-                TextButton(onClick = { RestTimer.clear() }) { Text("Skip") }
+            dev.dwm.liftlog.ui.components.FlatBar(
+                (remaining / RestTimer.durationMs.toFloat()).coerceIn(0f, 1f),
+                color,
+                Modifier.padding(vertical = 16.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { RestTimer.add(-15) }) { Text("−15") }
+                OutlinedButton(onClick = { RestTimer.clear() }) { Text("SKIP") }
+                OutlinedButton(onClick = { RestTimer.add(15) }) { Text("+15") }
             }
         }
+        nextLabel?.let {
+            Text(
+                "UP NEXT",
+                Modifier.padding(top = 32.dp),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(it, textAlign = TextAlign.Center, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+        if (!over) {
+            Text(
+                "tap anywhere to dismiss",
+                Modifier.padding(top = 24.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Looping phase-tempo metronome bar: DOWN / PAUSE / UP / PAUSE with tones per second. */
+@Composable
+internal fun TempoBar(tempo: String, onStop: () -> Unit) {
+    val phases = remember(tempo) { tempo.split("-").map { it.toIntOrNull() ?: 0 } }
+    val labels = listOf("DOWN", "PAUSE", "UP", "PAUSE")
+    var phase by remember { mutableStateOf(0) }
+    var count by remember { mutableStateOf(0) }
+    LaunchedEffect(tempo) {
+        while (true) {
+            for (p in phases.indices) {
+                val len = phases[p]
+                for (s in len downTo 1) {
+                    phase = p
+                    count = s
+                    playTone(when (p) { 0 -> Tone.Low; 2 -> Tone.High; else -> Tone.Tick })
+                    haptic(Haptic.Tick)
+                    delay(1000)
+                }
+            }
+        }
+    }
+    Row(
+        Modifier.fillMaxWidth()
+            .background(Palette.Volt.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        phases.forEachIndexed { i, len ->
+            if (len == 0) return@forEachIndexed
+            val active = i == phase
+            Column(
+                Modifier.weight(1f)
+                    .background(
+                        if (active) Palette.Volt.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceVariant,
+                        RoundedCornerShape(8.dp),
+                    )
+                    .padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(labels[i], style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (active) "$count" else "$len",
+                    fontWeight = FontWeight.Bold,
+                    color = if (active) Palette.Volt else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+        TextButton(onClick = onStop) { Text("■", color = Palette.Protein) }
     }
 }
 

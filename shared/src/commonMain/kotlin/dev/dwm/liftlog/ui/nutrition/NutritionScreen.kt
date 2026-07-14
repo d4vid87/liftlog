@@ -54,7 +54,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import dev.dwm.liftlog.ui.Palette
-import dev.dwm.liftlog.ui.components.CalorieRing
+import dev.dwm.liftlog.ui.components.FlatBar
+import dev.dwm.liftlog.ui.components.HeroNumber
 import dev.dwm.liftlog.ui.components.MacroBar
 import dev.dwm.liftlog.data.db.DailyMacro
 import dev.dwm.liftlog.data.db.GroceryItem
@@ -104,6 +105,15 @@ fun NutritionScreen(
     var todayWeight by remember { mutableStateOf<Double?>(null) }
     var addingTo by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableStateOf(0) }
+    var aiKeyMissing by remember { mutableStateOf(false) }
+    var showAiSetup by remember { mutableStateOf(false) }
+    var recents by remember { mutableStateOf<List<Food>>(emptyList()) }
+    var editingLog by remember { mutableStateOf<FoodLog?>(null) }
+    LaunchedEffect(logs, refresh, showAiSetup) {
+        aiKeyMissing = db.settingDao().get("aiApiKey").isNullOrBlank() &&
+            db.settingDao().get("aiEndpoint").isNullOrBlank()
+        recents = db.foodDao().recentFoods()
+    }
 
     LaunchedEffect(logs) {
         foods = logs.map { it.foodId }.distinct()
@@ -177,6 +187,37 @@ fun NutritionScreen(
         }
     }
 
+    fun snapMeal() {
+        if (takePhoto == null) return
+        if (aiKeyMissing) { showAiSetup = true; return }
+        scope.launch {
+            snapBusy = true; snapError = ""
+            val photo = takePhoto()
+            if (photo == null) { snapBusy = false; return@launch }
+            val client = aiClient(db).getOrElse {
+                snapError = it.message ?: "AI not configured"; snapBusy = false; return@launch
+            }
+            val parsed = runCatching { client.parseFoods("", photo) }
+                .getOrElse { snapError = "Photo parse failed: ${it.message}"; snapBusy = false; return@launch }
+            if (parsed.isEmpty()) {
+                snapError = "Couldn't identify any food in the photo"
+            } else {
+                val meal = mealForNow()
+                val ids = mutableListOf<String>()
+                parsed.forEach { p ->
+                    val food = p.toFood()
+                    db.foodDao().upsert(food)
+                    val log = FoodLog(epochDay = day, foodId = food.id, grams = p.grams, meal = meal)
+                    db.foodLogDao().insert(log)
+                    ids.add(log.id)
+                }
+                undoIds = ids
+                undoLabel = "Logged ${parsed.size} food${if (parsed.size > 1) "s" else ""} to $meal (${parsed.sumOf { it.kcal }.toInt()} kcal)"
+            }
+            snapBusy = false
+        }
+    }
+
     LazyColumn(
         modifier.fillMaxSize()
             .padding(12.dp)
@@ -220,34 +261,7 @@ fun NutritionScreen(
                 }
                 TextButton(onClick = { day++ }) { Text("▶") }
                 if (takePhoto != null) {
-                    IconButton(onClick = {
-                        scope.launch {
-                            snapBusy = true; snapError = ""
-                            val photo = takePhoto()
-                            if (photo == null) { snapBusy = false; return@launch }
-                            val client = aiClient(db).getOrElse {
-                                snapError = it.message ?: "AI not configured"; snapBusy = false; return@launch
-                            }
-                            val parsed = runCatching { client.parseFoods("", photo) }
-                                .getOrElse { snapError = "Photo parse failed: ${it.message}"; snapBusy = false; return@launch }
-                            if (parsed.isEmpty()) {
-                                snapError = "Couldn't identify any food in the photo"
-                            } else {
-                                val meal = mealForNow()
-                                val ids = mutableListOf<String>()
-                                parsed.forEach { p ->
-                                    val food = p.toFood()
-                                    db.foodDao().upsert(food)
-                                    val log = FoodLog(epochDay = day, foodId = food.id, grams = p.grams, meal = meal)
-                                    db.foodLogDao().insert(log)
-                                    ids.add(log.id)
-                                }
-                                undoIds = ids
-                                undoLabel = "Logged ${parsed.size} food${if (parsed.size > 1) "s" else ""} to $meal (${parsed.sumOf { it.kcal }.toInt()} kcal)"
-                            }
-                            snapBusy = false
-                        }
-                    }, enabled = !snapBusy) {
+                    IconButton(onClick = { snapMeal() }, enabled = !snapBusy) {
                         Icon(Icons.Default.PhotoCamera, "photo food log", tint = Palette.Trend)
                     }
                 }
@@ -290,64 +304,93 @@ fun NutritionScreen(
             }
         }
         item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Calories", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            // hero: one big number leads the screen
+            Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                HeroNumber((targetKcal - kcal).toInt(), "kcal left", Palette.Calories, Modifier.fillMaxWidth())
+                FlatBar((kcal / targetKcal).toFloat(), Palette.Calories)
+                val carbsPct = (100.0 - proteinPct - fatPct).coerceAtLeast(0.0)
+                MacroBar("Protein", protein, targetKcal * proteinPct / 100 / 4, Palette.Protein)
+                MacroBar("Carbs", carbs, targetKcal * carbsPct / 100 / 4, Palette.Carbs)
+                MacroBar("Fat", fat, targetKcal * fatPct / 100 / 9, Palette.Fat)
+                tdee?.let { t ->
                     Text(
-                        "Remaining = Target − Food",
+                        "Expenditure ~${t.tdeeKcal.toInt()} kcal · target ${t.targetKcal.toInt()} · " +
+                            "trend ${t.trendWeightKg.kgToLbDisplay().clean()} lb (${if (t.weeklyDeltaKg >= 0) "+" else ""}${t.weeklyDeltaKg.kgToLbDisplay().clean()} lb/wk)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        CalorieRing(eaten = kcal, target = targetKcal, modifier = Modifier.size(120.dp))
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            val carbsPct = (100.0 - proteinPct - fatPct).coerceAtLeast(0.0)
-                            MacroBar("Protein", protein, targetKcal * proteinPct / 100 / 4, Palette.Protein)
-                            MacroBar("Carbs", carbs, targetKcal * carbsPct / 100 / 4, Palette.Carbs)
-                            MacroBar("Fat", fat, targetKcal * fatPct / 100 / 9, Palette.Fat)
-                        }
-                    }
-                    tdee?.let { t ->
+                } ?: Text(
+                    "TDEE: log weight + food for 7+ days",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (aiKeyMissing) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth()
+                        .background(Palette.Volt.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                        .clickable { showAiSetup = true }
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(Icons.Default.PhotoCamera, null, tint = Palette.Volt)
+                    Column(Modifier.weight(1f)) {
+                        Text("Photo logging needs a 2-min setup", fontWeight = FontWeight.Bold, color = Palette.Volt)
                         Text(
-                            "Expenditure ~${t.tdeeKcal.toInt()} kcal · target ${t.targetKcal.toInt()} · " +
-                                "trend ${t.trendWeightKg.kgToLbDisplay().clean()} lb (${if (t.weeklyDeltaKg >= 0) "+" else ""}${t.weeklyDeltaKg.kgToLbDisplay().clean()} lb/wk)",
+                            "Connect a free AI key to snap meals — tap to set up",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    } ?: Text(
-                        "TDEE: log weight + food for 7+ days",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    WeightRow(todayWeight?.kgToLbDisplay()) { lb ->
-                        val kg = lb.lbToKg()
-                        scope.launch {
-                            db.weightDao().forDay(today)?.let {
-                                db.weightDao().upsert(it.copy(kg = kg, updatedAt = nowMillis()))
-                            } ?: db.weightDao().upsert(WeightEntry(epochDay = today, kg = kg))
-                            refresh++
-                        }
                     }
                 }
             }
         }
         meals.forEach { meal ->
+            val mealLogs = logs.filter { it.meal == meal }
+            val mealKcal = mealLogs.sumOf { l -> foods[l.foodId]?.let { it.kcal * l.grams / 100 } ?: 0.0 }
             item {
                 Row(
-                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    Modifier.fillMaxWidth().padding(top = 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(meal, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                    TextButton(onClick = { addingTo = meal }) {
-                        Text("Log Foods", color = Palette.Trend, fontWeight = FontWeight.Bold)
+                    Text(
+                        meal.uppercase(),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("${mealKcal.toInt()}", fontWeight = FontWeight.Bold)
+                        TextButton(onClick = { addingTo = meal }) {
+                            Text("+", color = Palette.Success, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                        }
+                    }
+                }
+                if (mealLogs.isEmpty()) {
+                    // ponytail: 1-tap re-log chips only on empty meals; all meals = clutter
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        recents.take(3).forEach { food ->
+                            androidx.compose.material3.AssistChip(
+                                onClick = {
+                                    scope.launch {
+                                        val g = db.foodLogDao().lastLogFor(food.id)?.grams ?: 100.0
+                                        db.foodLogDao().insert(FoodLog(epochDay = day, foodId = food.id, grams = g, meal = meal))
+                                    }
+                                },
+                                label = { Text(food.name.take(16), style = MaterialTheme.typography.labelSmall) },
+                            )
+                        }
                     }
                 }
             }
-            items(logs.filter { it.meal == meal }, key = { it.id }) { log ->
+            items(mealLogs, key = { it.id }) { log ->
                 val food = foods[log.foodId]
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    Modifier.fillMaxWidth().clickable { editingLog = log }.padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -355,23 +398,82 @@ fun NutritionScreen(
                     Column(Modifier.weight(1f)) {
                         Text(food?.name ?: "…", style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            food?.let { macroLine(it, log.grams) } ?: "",
+                            (food?.let { macroLine(it, log.grams) } ?: "") + " · ${log.grams.clean()}g",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Text(
-                            "${log.grams.clean()} grams",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
-                    IconButton(onClick = { scope.launch { db.foodLogDao().delete(log.id) } }) {
-                        Icon(Icons.Default.Delete, "delete", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    Text(
+                        "${food?.let { (it.kcal * log.grams / 100).toInt() } ?: 0}",
+                        fontWeight = FontWeight.Bold,
+                        color = Palette.Calories,
+                    )
+                }
+            }
+        }
+        if (takePhoto != null) {
+            item {
+                Button(
+                    onClick = { snapMeal() },
+                    enabled = !snapBusy,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                ) {
+                    Icon(Icons.Default.PhotoCamera, null)
+                    Text("  SNAP MEAL", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        item {
+            WeightRow(todayWeight?.kgToLbDisplay()) { lb ->
+                val kg = lb.lbToKg()
+                scope.launch {
+                    db.weightDao().forDay(today)?.let {
+                        db.weightDao().upsert(it.copy(kg = kg, updatedAt = nowMillis()))
+                    } ?: db.weightDao().upsert(WeightEntry(epochDay = today, kg = kg))
+                    refresh++
                 }
             }
         }
         item { WeeklyMacroCard(week, today, targetKcal) }
+    }
+
+    if (showAiSetup) {
+        dev.dwm.liftlog.ui.onboarding.AiSetupDialog(db) { showAiSetup = false }
+    }
+    editingLog?.let { log ->
+        val food = foods[log.foodId]
+        var gramsText by remember(log.id) { mutableStateOf(log.grams.clean()) }
+        var mealSel by remember(log.id) { mutableStateOf(log.meal) }
+        AlertDialog(
+            onDismissRequest = { editingLog = null },
+            title = { Text(food?.name ?: "Edit") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(gramsText, { gramsText = it }, label = { Text("Grams") }, singleLine = true)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        meals.forEach { m ->
+                            FilterChip(selected = mealSel == m, onClick = { mealSel = m }, label = { Text(m.take(1)) })
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        db.foodLogDao().update(
+                            log.copy(grams = gramsText.toDoubleOrNull() ?: log.grams, meal = mealSel, updatedAt = nowMillis())
+                        )
+                    }
+                    editingLog = null
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    scope.launch { db.foodLogDao().delete(log.id) }
+                    editingLog = null
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+        )
     }
 }
 

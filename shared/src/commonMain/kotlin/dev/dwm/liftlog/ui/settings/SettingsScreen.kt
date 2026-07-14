@@ -12,6 +12,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -244,6 +245,12 @@ fun SettingsScreen(
                 }
             }
         }
+        TextButton(onClick = {
+            scope.launch {
+                db.settingDao().put(Setting("onboarded", "0"))
+                status = "Setup wizard will run on next app start"
+            }
+        }) { Text("Run setup wizard again") }
         if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodyMedium)
     }
 }
