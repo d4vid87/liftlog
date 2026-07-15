@@ -21,3 +21,6 @@ expect fun playAlarm()
 
 /** Text-to-speech announcement, best-effort. No-op on desktop. */
 expect fun speak(text: String)
+
+/** Prevent screen lock while an exercise/timer is active. No-op on desktop. */
+expect fun keepScreenAwake(on: Boolean)

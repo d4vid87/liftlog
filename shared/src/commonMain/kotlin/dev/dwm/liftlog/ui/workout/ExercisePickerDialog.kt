@@ -1,6 +1,9 @@
 package dev.dwm.liftlog.ui.workout
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -32,7 +35,14 @@ fun ExercisePickerDialog(
     onPick: (Exercise) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
+    var equipFilter by remember { mutableStateOf<String?>(null) }
     val results by remember(query) { db.exerciseDao().search(query) }.collectAsStateList()
+    // "Bodyweight" seed data uses two spellings; match either
+    val filtered = when (equipFilter) {
+        null -> results
+        "body" -> results.filter { "body" in it.equipment.lowercase() || "none" in it.equipment.lowercase() }
+        else -> results.filter { equipFilter!! in it.equipment.lowercase() }
+    }
 
     FullScreenDialog("Add Exercise", onDismiss) {
         Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
@@ -43,8 +53,24 @@ fun ExercisePickerDialog(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                listOf(
+                    "All" to null, "Barbell" to "barbell", "Dumbbell" to "dumbbell",
+                    "Kettlebell" to "kettlebell", "Bodyweight" to "body", "TRX" to "trx",
+                    "Machine" to "machine", "Cable" to "cable",
+                ).forEach { (label, key) ->
+                    FilterChip(
+                        selected = equipFilter == key,
+                        onClick = { equipFilter = key },
+                        label = { Text(label) },
+                    )
+                }
+            }
             LazyColumn(Modifier.weight(1f)) {
-                items(results, key = { it.id }) { exercise ->
+                items(filtered, key = { it.id }) { exercise ->
                     Row(
                         Modifier.fillMaxWidth().clickable { onPick(exercise) }.padding(vertical = 8.dp),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,

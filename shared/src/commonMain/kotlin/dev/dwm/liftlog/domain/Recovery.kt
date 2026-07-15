@@ -38,6 +38,37 @@ fun musclesFor(muscles: String, category: String): List<Muscle> {
     }
 }
 
+/** Fixed rest needed before training the muscle again. */
+val Muscle.recoveryHours: Int
+    get() = when (this) {
+        Muscle.QUADS, Muscle.HAMSTRINGS, Muscle.GLUTES -> 72
+        Muscle.ABS, Muscle.OBLIQUES, Muscle.CALVES -> 24
+        else -> 48
+    }
+
+data class MuscleReadiness(
+    val muscle: Muscle,
+    val lastTrainedAt: Long?, // null = not trained recently → ready
+    val hoursLeft: Int,       // 0 = ready
+    val readyFraction: Float, // 1f = ready
+)
+
+/** Readiness of all 12 muscles, least-ready first. */
+fun readiness(lastTrained: Map<Muscle, Long>, now: Long): List<MuscleReadiness> =
+    Muscle.entries.map { m ->
+        val at = lastTrained[m]
+        if (at == null) MuscleReadiness(m, null, 0, 1f)
+        else {
+            val elapsedH = (now - at) / 3600_000.0
+            val left = (m.recoveryHours - elapsedH).coerceAtLeast(0.0)
+            MuscleReadiness(
+                m, at,
+                hoursLeft = kotlin.math.ceil(left).toInt(),
+                readyFraction = (elapsedH / m.recoveryHours).coerceIn(0.0, 1.0).toFloat(),
+            )
+        }
+    }.sortedBy { it.readyFraction }
+
 data class MuscleLoad(val muscles: List<Muscle>, val volumeKg: Double, val hoursAgo: Double)
 
 /**

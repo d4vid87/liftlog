@@ -82,6 +82,8 @@ fun DashboardScreen(
     var weights by remember { mutableStateOf<List<WeightEntry>>(emptyList()) }
     var intakes by remember { mutableStateOf<List<DayIntake>>(emptyList()) }
     var fabOpen by remember { mutableStateOf(false) }
+    var showRecovery by remember { mutableStateOf(false) }
+    if (showRecovery) dev.dwm.liftlog.ui.workout.RecoveryScreen(db) { showRecovery = false }
     var workoutDays by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var streakWeeks by remember { mutableStateOf(0) }
     var insights by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -246,7 +248,7 @@ fun DashboardScreen(
             if (insights.isNotEmpty()) InsightsCard(insights)
             WeightTrendCard(weights, today)
             ExpenditureCard(intakes, tdee, today)
-            dev.dwm.liftlog.ui.workout.RecoveryCard(db)
+            dev.dwm.liftlog.ui.workout.RecoveryCard(db, onOpen = { showRecovery = true })
         }
         Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
             FloatingActionButton(onClick = { fabOpen = true }, containerColor = Palette.Calories) {

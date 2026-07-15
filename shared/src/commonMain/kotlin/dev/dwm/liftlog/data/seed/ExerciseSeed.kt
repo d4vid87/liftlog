@@ -17,7 +17,7 @@ private data class SeedExercise(
 )
 
 // bump when exercises.json grows: existing installs insert the new names on next launch
-private const val SEED_VERSION = "2"
+private const val SEED_VERSION = "3"
 
 @OptIn(ExperimentalResourceApi::class)
 suspend fun seedExercisesIfEmpty(db: AppDatabase) {

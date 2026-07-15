@@ -8,6 +8,8 @@ actual fun notifyRestOver() {}
 
 actual fun playTone(t: Tone) = playBeep()
 
-actual fun playAlarm() = playBeep()
+actual fun playAlarm() = repeat(3) { playBeep() }
 
 actual fun speak(text: String) {}
+
+actual fun keepScreenAwake(on: Boolean) {}

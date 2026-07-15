@@ -88,6 +88,11 @@ fun App(
     LaunchedEffect(Unit) {
         seedExercisesIfEmpty(db)
         onboarded = db.settingDao().get("onboarded") == "1"
+        dev.dwm.liftlog.data.autoSync(db) // pull other devices' changes on open
+    }
+    // never let the screen lock while a workout or rest timer is live
+    LaunchedEffect(dev.dwm.liftlog.ui.workout.WorkoutSession.active, RestTimer.endsAt) {
+        keepScreenAwake(dev.dwm.liftlog.ui.workout.WorkoutSession.active || RestTimer.endsAt != null)
     }
 
     // coil image loader wired to ktor for exercise thumbnails
@@ -198,6 +203,13 @@ private fun RestTimerEngine() {
                     haptic(Haptic.Buzz)
                     delay(400)
                     playBeep()
+                }
+                // re-alert until the GO banner is tapped (max 3 extra)
+                repeat(3) {
+                    delay(5000)
+                    if (!RestTimer.over) return@LaunchedEffect
+                    playAlarm()
+                    haptic(Haptic.Buzz)
                 }
             }
             delay(200)

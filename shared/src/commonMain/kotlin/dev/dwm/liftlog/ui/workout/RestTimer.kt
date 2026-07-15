@@ -6,6 +6,11 @@ import androidx.compose.runtime.setValue
 import dev.dwm.liftlog.data.db.nowMillis
 import dev.dwm.liftlog.ui.notifyRest
 
+/** App-wide "workout in progress" flag — drives keep-screen-awake. */
+object WorkoutSession {
+    var active by mutableStateOf(false)
+}
+
 /** App-wide rest timer — lives outside any screen so it survives tab switches. */
 object RestTimer {
     var endsAt by mutableStateOf<Long?>(null)

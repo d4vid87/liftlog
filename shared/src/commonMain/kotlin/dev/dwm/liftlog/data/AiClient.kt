@@ -42,7 +42,7 @@ private data class ChatResponse(val choices: List<ChatChoice> = emptyList())
 // Out-of-the-box defaults: paste one OpenRouter key and photo/text food logging works.
 // Endpoint/model settings remain as optional overrides (e.g. local Ollama).
 const val DEFAULT_AI_ENDPOINT = "https://openrouter.ai/api/v1"
-const val DEFAULT_AI_MODEL = "anthropic/claude-haiku-4.5"
+const val DEFAULT_AI_MODEL = "google/gemini-2.5-flash"
 
 /**
  * OpenAI-compatible chat client — works with local Ollama (`http://host:11434/v1`),
@@ -93,8 +93,11 @@ class AiClient(
     /** Parse a natural-language meal description (or photo) into foods with estimated nutrition. */
     suspend fun parseFoods(description: String, imageB64Jpeg: String? = null): List<ParsedFood> {
         val prompt = """
-            Estimate the foods ${if (imageB64Jpeg != null) "in this photo" else "in this meal description"} and their nutrition.
+            Identify each distinct food ${if (imageB64Jpeg != null) "in this photo" else "in this meal description"} and estimate its nutrition.
             ${if (imageB64Jpeg == null) "Meal: \"$description\"" else ""}
+            Estimate portion size in grams using visible cues: a dinner plate is ~27 cm across, use
+            cutlery or hands for scale, and typical cooked food densities. Keep kcal and macros
+            consistent with the grams you state. When unsure, prefer common serving sizes over guesses.
             Reply with ONLY a JSON array, no prose:
             [{"name": "...", "grams": <portion grams>, "kcal": <kcal for that portion>, "protein": <g>, "carbs": <g>, "fat": <g>}]
         """.trimIndent()

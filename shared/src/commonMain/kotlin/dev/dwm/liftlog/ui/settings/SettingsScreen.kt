@@ -207,6 +207,23 @@ fun SettingsScreen(
                 )
                 OutlinedTextField(aiKey, { aiKey = it }, label = { Text("API key") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(aiEndpoint, { aiEndpoint = it }, label = { Text("Endpoint override (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // one-tap model presets; free-text override below still wins
+                    listOf(
+                        "Gemini 2.5 Flash" to "google/gemini-2.5-flash",
+                        "Claude Haiku 4.5" to "anthropic/claude-haiku-4.5",
+                        "GPT-4o" to "openai/gpt-4o",
+                    ).forEach { (label, id) ->
+                        androidx.compose.material3.FilterChip(
+                            selected = aiModel.trim() == id || (aiModel.isBlank() && id == dev.dwm.liftlog.data.DEFAULT_AI_MODEL),
+                            onClick = {
+                                aiModel = id
+                                scope.launch { db.settingDao().put(Setting("aiModel", id)) }
+                            },
+                            label = { Text(label) },
+                        )
+                    }
+                }
                 OutlinedTextField(aiModel, { aiModel = it }, label = { Text("Model override (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Button(onClick = {
                     scope.launch {

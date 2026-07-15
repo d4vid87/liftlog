@@ -29,6 +29,13 @@ data class SyncResponse(
 
 data class SyncResult(val pushed: Int, val pulled: Int)
 
+/** Silent best-effort sync — fires on app start and workout finish; manual button stays for debugging. */
+suspend fun autoSync(db: AppDatabase) {
+    val url = db.settingDao().get("syncUrl")?.takeIf { it.isNotBlank() } ?: return
+    val token = db.settingDao().get("syncToken")?.takeIf { it.isNotBlank() } ?: return
+    runCatching { SyncEngine(db, httpClient()).sync(url, token) }
+}
+
 /**
  * LWW replication against the Netlify sync function.
  * Push local rows with updatedAt > lastSync; pull remote rows newer than lastSync;

@@ -23,5 +23,18 @@ class RecoveryTest {
         assertEquals(0.5, f[Muscle.QUADS]!!, 1e-9)
     }
 
+    @Test
+    fun readinessCountsDownFixedHours() {
+        val now = 1_000_000_000_000L
+        val r = readiness(mapOf(Muscle.QUADS to now - 24 * 3600_000L), now)
+        val quads = r.first { it.muscle == Muscle.QUADS }
+        assertEquals(48, quads.hoursLeft)
+        assertEquals(24f / 72f, quads.readyFraction, 1e-6f)
+        val chest = r.first { it.muscle == Muscle.CHEST }
+        assertEquals(0, chest.hoursLeft)
+        assertEquals(1f, chest.readyFraction)
+        assertEquals(Muscle.QUADS, r.first().muscle) // least ready first
+    }
+
     private fun List<Muscle>.sorted() = sortedBy { it.name }
 }

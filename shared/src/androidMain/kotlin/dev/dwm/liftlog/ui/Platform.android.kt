@@ -14,6 +14,20 @@ import androidx.core.app.NotificationCompat
 @SuppressLint("StaticFieldLeak")
 var appContext: Context? = null
 
+// set in MainActivity.onCreate, nulled in onDestroy
+@SuppressLint("StaticFieldLeak")
+var appActivity: android.app.Activity? = null
+
+actual fun keepScreenAwake(on: Boolean) {
+    val a = appActivity ?: return
+    a.runOnUiThread {
+        runCatching {
+            val flag = android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            if (on) a.window.addFlags(flag) else a.window.clearFlags(flag)
+        }
+    }
+}
+
 private const val CHANNEL_REST = "rest"
 private const val NOTIF_ID = 42
 
@@ -38,9 +52,13 @@ actual fun haptic(kind: Haptic) {
     }
 }
 
-// ponytail: single loud generator reused for alarm + tempo tones; recreated never, fine for app lifetime
+// separate generators: tempo ticks on media stream, alarm fallback on alarm stream —
+// sharing one meant startTone(tempo) preempted the rest-over alarm
 private val alarmTone by lazy {
     runCatching { android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100) }.getOrNull()
+}
+private val tempoTone by lazy {
+    runCatching { android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 80) }.getOrNull()
 }
 private var tts: android.speech.tts.TextToSpeech? = null
 private var ttsReady = false
@@ -52,12 +70,36 @@ actual fun playTone(t: Tone) {
             Tone.High -> android.media.ToneGenerator.TONE_DTMF_9
             Tone.Tick -> android.media.ToneGenerator.TONE_PROP_BEEP
         }
-        alarmTone?.startTone(tone, 150)
+        tempoTone?.startTone(tone, 150)
     }
 }
 
 actual fun playAlarm() {
-    runCatching { alarmTone?.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 900) }
+    val ctx = appContext ?: return
+    val played = runCatching {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val stream = android.media.AudioManager.STREAM_ALARM
+        val saved = am.getStreamVolume(stream)
+        runCatching { am.setStreamVolume(stream, am.getStreamMaxVolume(stream), 0) }
+        val uri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_ALARM)
+            ?: android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
+            ?: error("no ringtone")
+        val mp = android.media.MediaPlayer()
+        mp.setAudioAttributes(
+            android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+        )
+        mp.setDataSource(ctx, uri)
+        mp.prepare()
+        mp.start()
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            runCatching { mp.stop(); mp.release() }
+            runCatching { am.setStreamVolume(stream, saved, 0) }
+        }, 3000)
+    }.isSuccess
+    if (!played) runCatching { alarmTone?.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 900) }
 }
 
 actual fun speak(text: String) {

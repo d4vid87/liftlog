@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.size
@@ -78,6 +79,10 @@ import dev.dwm.liftlog.data.installTemplate
 import dev.dwm.liftlog.data.startProgramWorkout
 import dev.dwm.liftlog.data.startRoutineWorkout
 import dev.dwm.liftlog.data.templates
+import dev.dwm.liftlog.domain.Muscle
+import dev.dwm.liftlog.domain.MuscleReadiness
+import dev.dwm.liftlog.domain.musclesFor
+import dev.dwm.liftlog.domain.readiness
 import dev.dwm.liftlog.domain.e1rm
 import dev.dwm.liftlog.domain.kgToLb
 import dev.dwm.liftlog.domain.kgToLbDisplay
@@ -96,6 +101,23 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 fun now(): Long = nowMillis()
+
+internal fun Muscle.label() = name.lowercase().replaceFirstChar { it.uppercase() }
+
+internal suspend fun musclesForRoutine(db: AppDatabase, routineId: String): List<Muscle> =
+    db.routineDao().exercisesFor(routineId)
+        .mapNotNull { db.exerciseDao().byId(it.exerciseId) }
+        .flatMap { musclesFor(it.muscles, it.category) }
+        .distinct()
+
+internal suspend fun musclesForProgramDay(db: AppDatabase, program: Program): List<Muscle> {
+    val days = db.programDao().daysFor(program.id)
+    val day = days.getOrNull(program.currentDayIndex % days.size.coerceAtLeast(1)) ?: return emptyList()
+    return db.programDao().exercisesForDay(day.id)
+        .mapNotNull { db.exerciseDao().byId(it.exerciseId) }
+        .flatMap { musclesFor(it.muscles, it.category) }
+        .distinct()
+}
 
 fun formatDuration(millis: Long): String {
     val s = (millis / 1000).coerceAtLeast(0)
@@ -130,21 +152,42 @@ fun WorkoutTab(
     onQuickStartConsumed: () -> Unit = {},
 ) {
     var activeWorkout by remember { mutableStateOf<Workout?>(null) }
+    var quickWarn by remember { mutableStateOf<Pair<String, suspend () -> Unit>?>(null) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(refreshKey) { activeWorkout = db.workoutDao().activeWorkout() }
+    LaunchedEffect(activeWorkout) { WorkoutSession.active = activeWorkout != null }
     // 1-tap start from Dashboard: next program day, else first routine
     LaunchedEffect(quickStart) {
         if (!quickStart) return@LaunchedEffect
         onQuickStartConsumed()
         if (db.workoutDao().activeWorkout() != null) return@LaunchedEffect
         val program = db.programDao().programs().first().firstOrNull()
-        if (program != null) {
-            startProgramWorkout(db, program)?.let { activeWorkout = it }
-        } else {
-            db.routineDao().routines().first().firstOrNull()?.let {
-                activeWorkout = startRoutineWorkout(db, it)
-            }
+        val routine = if (program == null) db.routineDao().routines().first().firstOrNull() else null
+        val muscles = when {
+            program != null -> musclesForProgramDay(db, program)
+            routine != null -> musclesForRoutine(db, routine.id)
+            else -> return@LaunchedEffect
         }
+        val doStart: suspend () -> Unit = {
+            if (program != null) startProgramWorkout(db, program)?.let { activeWorkout = it }
+            else routine?.let { activeWorkout = startRoutineWorkout(db, it) }
+        }
+        val hits = readiness(lastTrainedByMuscle(db), now()).filter { it.hoursLeft > 0 && it.muscle in muscles }
+        if (hits.isEmpty()) doStart()
+        else quickWarn = hits.joinToString { "${it.muscle.label()} — ${it.hoursLeft}h" } to doStart
+    }
+
+    quickWarn?.let { (msg, doStart) ->
+        AlertDialog(
+            onDismissRequest = { quickWarn = null },
+            title = { Text("Still recovering") },
+            text = { Text("$msg. Train anyway?") },
+            confirmButton = {
+                TextButton(onClick = { quickWarn = null; scope.launch { doStart() } }) { Text("Train Anyway") }
+            },
+            dismissButton = { TextButton(onClick = { quickWarn = null }) { Text("Cancel") } },
+        )
     }
 
     val workout = activeWorkout
@@ -163,9 +206,31 @@ private fun StartScreen(db: AppDatabase, modifier: Modifier, onStarted: (Workout
     val routines by remember { db.routineDao().routines() }.collectAsStateList()
     var editorFor by remember { mutableStateOf<Routine?>(null) }
     var showEditor by remember { mutableStateOf(false) }
+    var readinessList by remember { mutableStateOf<List<MuscleReadiness>>(emptyList()) }
+    var showRecovery by remember { mutableStateOf(false) }
+    var warn by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
+
+    LaunchedEffect(routines) { readinessList = readiness(lastTrainedByMuscle(db), now()) }
+
+    // warn (not block) when the session hits still-recovering muscles
+    val startChecked: (List<Muscle>, () -> Unit) -> Unit = { muscles, doStart ->
+        val hits = readinessList.filter { it.hoursLeft > 0 && it.muscle in muscles }
+        if (hits.isEmpty()) doStart()
+        else warn = hits.joinToString { "${it.muscle.label()} — ${it.hoursLeft}h" } to doStart
+    }
 
     if (showEditor) {
         RoutineEditorDialog(db, editorFor) { showEditor = false; editorFor = null }
+    }
+    if (showRecovery) RecoveryScreen(db) { showRecovery = false }
+    warn?.let { (msg, doStart) ->
+        AlertDialog(
+            onDismissRequest = { warn = null },
+            title = { Text("Still recovering") },
+            text = { Text("$msg. Train anyway?") },
+            confirmButton = { TextButton(onClick = { warn = null; doStart() }) { Text("Train Anyway") } },
+            dismissButton = { TextButton(onClick = { warn = null }) { Text("Cancel") } },
+        )
     }
 
     LazyColumn(
@@ -188,7 +253,23 @@ private fun StartScreen(db: AppDatabase, modifier: Modifier, onStarted: (Workout
                 }) { Text("Quick Start", color = Palette.Boost, fontWeight = FontWeight.Bold) }
             }
         }
-        item { ProgramsSection(db, onStarted) }
+        item { ProgramsSection(db, startChecked, onStarted) }
+        item {
+            // recovery strip: amber chips for muscles still resting; tap → full guide
+            Row(
+                Modifier.fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .clickable { showRecovery = true },
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val notReady = readinessList.filter { it.hoursLeft > 0 }
+                if (notReady.isEmpty()) {
+                    RecoveryChip("All muscles recovered ✓", Palette.Success)
+                } else {
+                    notReady.forEach { RecoveryChip("${it.muscle.label()} ${it.hoursLeft}h", Palette.Protein) }
+                }
+            }
+        }
         item {
             Row(
                 Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -213,7 +294,10 @@ private fun StartScreen(db: AppDatabase, modifier: Modifier, onStarted: (Workout
             RoutineCard(
                 db, routine,
                 index = routines.indexOf(routine) + 1,
-                onStart = { scope.launch { onStarted(startRoutineWorkout(db, routine)) } },
+                readinessList = readinessList,
+                onStart = { muscles ->
+                    startChecked(muscles) { scope.launch { onStarted(startRoutineWorkout(db, routine)) } }
+                },
                 onEdit = { editorFor = routine; showEditor = true },
                 onDelete = { scope.launch { db.routineDao().delete(routine.id) } },
             )
@@ -222,22 +306,34 @@ private fun StartScreen(db: AppDatabase, modifier: Modifier, onStarted: (Workout
 }
 
 @Composable
+private fun RecoveryChip(text: String, color: Color) {
+    Box(
+        Modifier.background(color.copy(alpha = 0.15f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    ) { Text(text, style = MaterialTheme.typography.labelMedium, color = color, fontWeight = FontWeight.Bold) }
+}
+
+@Composable
 private fun RoutineCard(
     db: AppDatabase,
     routine: Routine,
     index: Int,
-    onStart: () -> Unit,
+    readinessList: List<MuscleReadiness>,
+    onStart: (List<Muscle>) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var preview by remember { mutableStateOf("") }
     var count by remember { mutableStateOf(0) }
+    var muscles by remember { mutableStateOf<List<Muscle>>(emptyList()) }
     LaunchedEffect(routine.id, routine.updatedAt) {
-        val names = db.routineDao().exercisesFor(routine.id)
-            .mapNotNull { db.exerciseDao().byId(it.exerciseId)?.name }
-        count = names.size
-        preview = names.joinToString(" · ")
+        val exs = db.routineDao().exercisesFor(routine.id)
+            .mapNotNull { db.exerciseDao().byId(it.exerciseId) }
+        count = exs.size
+        preview = exs.joinToString(" · ") { it.name }
+        muscles = exs.flatMap { musclesFor(it.muscles, it.category) }.distinct()
     }
+    val recovering = readinessList.filter { it.hoursLeft > 0 && it.muscle in muscles }
     // flat numbered row: number • name • preview • Start pill (row tap = edit)
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onEdit).padding(vertical = 8.dp),
@@ -257,13 +353,22 @@ private fun RoutineCard(
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
+            if (recovering.isNotEmpty()) {
+                Text(
+                    "recovering: " + recovering.joinToString { "${it.muscle.label()} (${it.hoursLeft}h)" },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Palette.Protein,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
         }
         IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
             Icon(Icons.Default.Delete, "delete routine", tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Box(
             Modifier.background(Palette.Success, RoundedCornerShape(20.dp))
-                .clickable(onClick = onStart)
+                .clickable { onStart(muscles) }
                 .padding(horizontal = 18.dp, vertical = 10.dp),
         ) { Text("Start", color = Color.Black, fontWeight = FontWeight.Bold) }
     }
@@ -424,27 +529,49 @@ private fun RoutineEditorDialog(db: AppDatabase, existing: Routine?, onClose: ()
 // ---------- Programs (auto-progression) ----------
 
 @Composable
-private fun ProgramsSection(db: AppDatabase, onStarted: (Workout) -> Unit) {
+private fun ProgramsSection(
+    db: AppDatabase,
+    startChecked: (List<Muscle>, () -> Unit) -> Unit,
+    onStarted: (Workout) -> Unit,
+) {
     val scope = rememberCoroutineScope()
     val programs by remember { db.programDao().programs() }.collectAsStateList()
     var showTemplates by remember { mutableStateOf(false) }
 
     if (showTemplates) {
-        AlertDialog(
-            onDismissRequest = { showTemplates = false },
-            confirmButton = { TextButton(onClick = { showTemplates = false }) { Text("Cancel") } },
-            title = { Text("Choose Program") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    templates.forEach { template ->
-                        TextButton(onClick = {
-                            scope.launch { installTemplate(db, template) }
-                            showTemplates = false
-                        }, modifier = Modifier.fillMaxWidth()) { Text(template.name) }
+        dev.dwm.liftlog.ui.components.FullScreenDialog("Choose Program", onDismiss = { showTemplates = false }) {
+            Column(
+                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                templates.groupBy { it.group }.forEach { (group, list) ->
+                    Text(
+                        group.uppercase(),
+                        Modifier.padding(top = 14.dp, bottom = 4.dp),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    list.forEach { template ->
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    scope.launch { installTemplate(db, template) }
+                                    showTemplates = false
+                                }
+                                .padding(vertical = 8.dp),
+                        ) {
+                            Text(template.name, fontWeight = FontWeight.Bold)
+                            Text(
+                                "${template.days.size} day${if (template.days.size == 1) "" else "s"}/cycle",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
-            },
-        )
+            }
+        }
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -456,16 +583,25 @@ private fun ProgramsSection(db: AppDatabase, onStarted: (Workout) -> Unit) {
             Text("Programs", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             TextButton(onClick = { showTemplates = true }) { Text("+ Add Program") }
         }
-        programs.forEach { program -> ProgramCard(db, program, onStarted) }
+        programs.forEach { program -> ProgramCard(db, program, startChecked, onStarted) }
         AiSuggestCard(db)
     }
 }
 
 @Composable
-private fun ProgramCard(db: AppDatabase, program: Program, onStarted: (Workout) -> Unit) {
+private fun ProgramCard(
+    db: AppDatabase,
+    program: Program,
+    startChecked: (List<Muscle>, () -> Unit) -> Unit,
+    onStarted: (Workout) -> Unit,
+) {
     val scope = rememberCoroutineScope()
     var days by remember { mutableStateOf<List<ProgramDay>>(emptyList()) }
-    LaunchedEffect(program.id, program.currentDayIndex) { days = db.programDao().daysFor(program.id) }
+    var dayMuscles by remember { mutableStateOf<List<Muscle>>(emptyList()) }
+    LaunchedEffect(program.id, program.currentDayIndex) {
+        days = db.programDao().daysFor(program.id)
+        dayMuscles = musclesForProgramDay(db, program)
+    }
     val n = days.size.coerceAtLeast(1)
     val dayNum = (program.currentDayIndex % n) + 1
     val today = days.getOrNull(program.currentDayIndex % n)
@@ -479,7 +615,9 @@ private fun ProgramCard(db: AppDatabase, program: Program, onStarted: (Workout) 
                 ),
                 RoundedCornerShape(20.dp),
             )
-            .clickable { scope.launch { startProgramWorkout(db, program)?.let(onStarted) } }
+            .clickable {
+                startChecked(dayMuscles) { scope.launch { startProgramWorkout(db, program)?.let(onStarted) } }
+            }
             .padding(20.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -618,6 +756,7 @@ fun ActiveWorkoutScreen(
         }
         scope.launch { db.workoutDao().updateSet(s.copy(completed = true, updatedAt = now())) }
         restPeeked = false
+        tempoFor = null // stop metronome — rest starts now
         playBeep()
         haptic(Haptic.Click)
         if (!autoStartRest) return
@@ -674,9 +813,11 @@ fun ActiveWorkoutScreen(
             onFinish = {
                 scope.launch {
                     RestTimer.clear()
+                    tempoFor = null
                     val end = now()
                     db.workoutDao().updateWorkout(workout.copy(finishedAt = end, updatedAt = end))
                     applyProgression(db, workout)
+                    scope.launch { dev.dwm.liftlog.data.autoSync(db) } // silent push to Netlify
                     val done = sets.filter { it.completed }
                     val prs = done
                         .filter { it.weightKg > 0 && e1rm(it.weightKg, it.reps) > (bestBefore[it.exerciseId] ?: 0.0) }
@@ -707,6 +848,7 @@ fun ActiveWorkoutScreen(
             onDiscard = {
                 scope.launch {
                     RestTimer.clear()
+                    tempoFor = null
                     db.workoutDao().deleteWorkout(workout.id)
                     onFinished()
                 }

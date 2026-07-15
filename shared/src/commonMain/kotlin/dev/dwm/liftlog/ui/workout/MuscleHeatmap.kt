@@ -27,9 +27,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -39,6 +40,9 @@ import dev.dwm.liftlog.domain.Muscle
 import dev.dwm.liftlog.domain.MuscleLoad
 import dev.dwm.liftlog.domain.fatigueMap
 import dev.dwm.liftlog.domain.musclesFor
+import dev.dwm.liftlog.domain.readiness
+import androidx.compose.foundation.clickable
+import kotlinx.coroutines.flow.first
 
 private val RestedColor = Color(0xFF3C6B4F)   // recovered = calm green
 private val MidColor = Color(0xFFFFB74D)      // working = amber
@@ -49,10 +53,30 @@ private fun heatColor(f: Float): Color =
     if (f < 0.5f) lerp(RestedColor, MidColor, f * 2f)
     else lerp(MidColor, HotColor, (f - 0.5f) * 2f)
 
+/** Last time each muscle was trained (finished workouts, last 7 days), keyed to workout.startedAt. */
+suspend fun lastTrainedByMuscle(db: AppDatabase): Map<Muscle, Long> {
+    val now = nowMillis()
+    val since = now - 7 * 24 * 3600_000L
+    val out = mutableMapOf<Muscle, Long>()
+    val exCache = mutableMapOf<String, List<Muscle>>()
+    for (w in db.workoutDao().history().first()) {
+        if (w.startedAt < since) break // history is startedAt DESC
+        for (set in db.workoutDao().setsForWorkoutOnce(w.id)) {
+            if (!set.completed) continue
+            val muscles = exCache.getOrPut(set.exerciseId) {
+                db.exerciseDao().byId(set.exerciseId)?.let { musclesFor(it.muscles, it.category) } ?: emptyList()
+            }
+            for (m in muscles) out[m] = maxOf(out[m] ?: 0L, w.startedAt)
+        }
+    }
+    return out
+}
+
 /** Fitbod-style recovery heat map: front + back body, muscles tinted by 96h fatigue. */
 @Composable
-fun RecoveryCard(db: AppDatabase, modifier: Modifier = Modifier) {
+fun RecoveryCard(db: AppDatabase, modifier: Modifier = Modifier, onOpen: (() -> Unit)? = null) {
     var fatigue by remember { mutableStateOf<Map<Muscle, Double>>(emptyMap()) }
+    var readyCount by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(Unit) {
         val now = nowMillis()
@@ -70,11 +94,20 @@ fun RecoveryCard(db: AppDatabase, modifier: Modifier = Modifier) {
             loads.add(MuscleLoad(muscles, volume, (now - set.updatedAt) / 3600_000.0))
         }
         fatigue = fatigueMap(loads)
+        readyCount = readiness(lastTrainedByMuscle(db), now).count { it.hoursLeft == 0 }
     }
 
-    Card(modifier.fillMaxWidth()) {
+    val cardMod = if (onOpen != null) modifier.fillMaxWidth().clickable { onOpen() } else modifier.fillMaxWidth()
+    Card(cardMod) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Muscle Recovery", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            readyCount?.let {
+                Text(
+                    "$it of ${Muscle.entries.size} muscles ready" + if (onOpen != null) " · tap for details" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             Text(
                 if (fatigue.isEmpty()) "Train to see fatigue from the last 4 days."
                 else "Green = recovered · amber = working · red = fried (last 4 days).",
@@ -93,101 +126,114 @@ fun RecoveryCard(db: AppDatabase, modifier: Modifier = Modifier) {
     }
 }
 
+// --- anatomical figure: hand-authored SVG paths in a 100×220 viewport ---
+// left-side muscle paths are mirrored at draw time; symmetric shapes drawn once
+private object BodyPaths {
+    const val VW = 100f
+    const val VH = 220f
+
+    val head = "M50,2 C56,2 59,6.5 59,13 C59,19.5 56,24 50,24 C44,24 41,19.5 41,13 C41,6.5 44,2 50,2 Z"
+
+    // full silhouette: neck, delt caps, arms slightly abducted, v-taper torso, legs to ankles
+    val body =
+        "M45,24 L55,24 L56.5,29 " +
+        "C66,30 73,32 76.5,37 C79.5,42 80.5,49 82,57 L85,76 L87,96 L82.5,97 L79.5,79 L77,61 L74.5,51 " +
+        "L73.5,61 L74.5,80 L75.5,96 C75.5,103 73.5,109 71,113 L69,131 L68,151 L69,166 L68,186 L69,204 L61.5,204 L61,186 L60,166 L59,149 L57,129 L54,113 " +
+        "L50,111 L46,113 L43,129 L41,149 L40,166 L39,186 L38.5,204 L31,204 L32,186 L31,166 L32,151 L31,131 L29,113 " +
+        "C26.5,109 24.5,103 24.5,96 L25.5,80 L26.5,61 L25.5,51 L23,61 L20.5,79 L17.5,97 L13,96 L15,76 L18,57 " +
+        "C19.5,49 20.5,42 23.5,37 C27,32 34,30 43.5,29 Z"
+
+    // ---- front regions (left-side ones mirrored for right) ----
+    val trapsFront = "M43,26 L57,26 L61,31 L39,31 Z"
+    val deltL = "M23.5,31.5 C27.5,29.5 32.5,29.5 35,31.5 C36,34.5 35.5,38.5 33,40.5 C29,40.5 25,38.5 24,35.5 Z"
+    val pecL = "M36.5,32.5 C42,31.5 47.5,32.5 49.2,34.5 L49.2,46 C45,49.5 38.5,48.5 36,44.5 C35,40.5 35,35.5 36.5,32.5 Z"
+    val bicepL = "M22,42 C25,41 28.5,42 29.5,44 L28.5,58 C26.5,60.5 23,60.5 21.5,58 L21,46 Z"
+    val abs = "M42.5,50 L57.5,50 L56.5,79 C53.5,83 46.5,83 43.5,79 Z"
+    val obliqueL = "M36.5,50 L41,51 L42,77 L37.5,73 Z"
+    val quadL = "M34,110 C39,108 44.5,110 46,114 L45,139 C42,143 36.5,143 34.8,139 Z"
+    val calfFrontL = "M32.5,150 C36,148 40,149 41,152 L40,173 C38,176 34.5,176 33.5,173 Z"
+
+    // ---- back regions ----
+    val trapsBack = "M50,26 L62.5,32 L50,53 L37.5,32 Z"
+    val latL = "M35.5,36 L47.5,44 L47.5,66 L38,72.5 C36,60 35,46 35.5,36 Z"
+    val gluteL = "M37.5,84 C43,82 48.5,84 49.3,88 L48.3,101 C44,105 38.5,104 36.8,99.5 Z"
+    val hamL = "M34.5,110 C39.5,108.5 44.5,110 45.8,114 L44.8,139 C41.8,143 36.5,143 34.8,139 Z"
+    val calfBackL = "M32.5,149 C36.5,146.5 40.5,148 41.3,151.5 L40.3,174 C38,177 34.3,177 33.3,174 Z"
+}
+
 @Composable
 internal fun BodyCanvas(fatigue: Map<Muscle, Double>, front: Boolean, modifier: Modifier) {
-    // hot muscles pulse; the whole figure sits on a smooth capsule-limbed silhouette
     val pulse = rememberInfiniteTransition()
     val throb by pulse.animateFloat(
         0.72f, 1f,
         animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
     )
+    // parse once per composition, reuse across frames
+    val paths = remember {
+        fun p(d: String): Path = PathParser().parsePathString(d).toPath()
+        object {
+            val head = p(BodyPaths.head)
+            val body = p(BodyPaths.body)
+            val front = listOf(
+                Muscle.TRAPS to listOf(p(BodyPaths.trapsFront)),
+                Muscle.SHOULDERS to listOf(p(BodyPaths.deltL), p(BodyPaths.deltL).mirrored()),
+                Muscle.CHEST to listOf(p(BodyPaths.pecL), p(BodyPaths.pecL).mirrored()),
+                Muscle.BICEPS to listOf(p(BodyPaths.bicepL), p(BodyPaths.bicepL).mirrored()),
+                Muscle.ABS to listOf(p(BodyPaths.abs)),
+                Muscle.OBLIQUES to listOf(p(BodyPaths.obliqueL), p(BodyPaths.obliqueL).mirrored()),
+                Muscle.QUADS to listOf(p(BodyPaths.quadL), p(BodyPaths.quadL).mirrored()),
+                Muscle.CALVES to listOf(p(BodyPaths.calfFrontL), p(BodyPaths.calfFrontL).mirrored()),
+            )
+            val back = listOf(
+                Muscle.TRAPS to listOf(p(BodyPaths.trapsBack)),
+                Muscle.SHOULDERS to listOf(p(BodyPaths.deltL), p(BodyPaths.deltL).mirrored()),
+                Muscle.LATS to listOf(p(BodyPaths.latL), p(BodyPaths.latL).mirrored()),
+                Muscle.TRICEPS to listOf(p(BodyPaths.bicepL), p(BodyPaths.bicepL).mirrored()),
+                Muscle.GLUTES to listOf(p(BodyPaths.gluteL), p(BodyPaths.gluteL).mirrored()),
+                Muscle.HAMSTRINGS to listOf(p(BodyPaths.hamL), p(BodyPaths.hamL).mirrored()),
+                Muscle.CALVES to listOf(p(BodyPaths.calfBackL), p(BodyPaths.calfBackL).mirrored()),
+            )
+        }
+    }
+    val outlineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+
     Canvas(modifier.height(260.dp)) {
-        fun f(m: Muscle) = (fatigue[m] ?: 0.0).toFloat()
-        fun tint(m: Muscle): Color {
-            val v = f(m)
-            val c = heatColor(v)
-            return if (v > 0.55f) c.copy(alpha = throb) else c
-        }
+        // fit viewport preserving aspect, centered
+        val s = minOf(size.width / BodyPaths.VW, size.height / BodyPaths.VH)
+        val dx = (size.width - BodyPaths.VW * s) / 2f
+        val dy = (size.height - BodyPaths.VH * s) / 2f
+        withTransform({
+            translate(dx, dy)
+            scale(s, s, pivot = Offset.Zero)
+        }) {
+            // body fill with a subtle vertical gradient for depth
+            val bodyBrush = Brush.verticalGradient(
+                listOf(BodyColor.copy(alpha = 0.95f), BodyColor.copy(alpha = 0.75f)),
+                startY = 0f, endY = BodyPaths.VH,
+            )
+            drawPath(paths.head, bodyBrush)
+            drawPath(paths.body, bodyBrush)
+            drawPath(paths.head, outlineColor, style = Stroke(width = 0.8f))
+            drawPath(paths.body, outlineColor, style = Stroke(width = 0.8f))
 
-        // --- silhouette: head, neck, tapered torso, capsule limbs ---
-        drawCircle(BodyColor, radius = 0.048f * size.height, center = pt(0.5f, 0.055f))
-        limb(0.5f, 0.095f, 0.5f, 0.135f, 0.055f, BodyColor)            // neck
-        torso(BodyColor)
-        limb(0.305f, 0.165f, 0.245f, 0.33f, 0.062f, BodyColor)         // upper arms
-        limb(0.695f, 0.165f, 0.755f, 0.33f, 0.062f, BodyColor)
-        limb(0.245f, 0.33f, 0.215f, 0.47f, 0.05f, BodyColor)           // forearms
-        limb(0.755f, 0.33f, 0.785f, 0.47f, 0.05f, BodyColor)
-        limb(0.435f, 0.52f, 0.415f, 0.73f, 0.085f, BodyColor)          // thighs
-        limb(0.565f, 0.52f, 0.585f, 0.73f, 0.085f, BodyColor)
-        limb(0.415f, 0.73f, 0.41f, 0.94f, 0.06f, BodyColor)            // lower legs
-        limb(0.585f, 0.73f, 0.59f, 0.94f, 0.06f, BodyColor)
-
-        // --- muscles: glow halo + shape ---
-        fun muscle(m: Muscle, x: Float, y: Float, w: Float, h: Float) {
-            val v = f(m)
-            val c = tint(m)
-            if (v > 0.15f) {
-                drawCircle(
-                    Brush.radialGradient(
-                        listOf(heatColor(v).copy(alpha = 0.45f * v * (if (v > 0.55f) throb else 1f)), Color.Transparent),
-                        center = pt(x + w / 2, y + h / 2),
-                        radius = (w + h) / 2 * size.height,
-                    ),
-                    radius = (w + h) / 2 * size.height,
-                    center = pt(x + w / 2, y + h / 2),
-                )
+            for ((m, regions) in if (front) paths.front else paths.back) {
+                val v = (fatigue[m] ?: 0.0).toFloat()
+                val c = heatColor(v).let { if (v > 0.55f) it.copy(alpha = throb) else it }
+                for (r in regions) {
+                    drawPath(r, c)
+                    drawPath(r, outlineColor.copy(alpha = 0.25f), style = Stroke(width = 0.5f))
+                }
             }
-            drawOval(c, topLeft = pt(x, y), size = Size(w * size.width, h * size.height))
-        }
-
-        if (front) {
-            muscle(Muscle.SHOULDERS, 0.27f, 0.14f, 0.09f, 0.06f); muscle(Muscle.SHOULDERS, 0.64f, 0.14f, 0.09f, 0.06f)
-            muscle(Muscle.CHEST, 0.375f, 0.165f, 0.115f, 0.085f); muscle(Muscle.CHEST, 0.51f, 0.165f, 0.115f, 0.085f)
-            muscle(Muscle.BICEPS, 0.245f, 0.20f, 0.075f, 0.11f); muscle(Muscle.BICEPS, 0.68f, 0.20f, 0.075f, 0.11f)
-            muscle(Muscle.ABS, 0.435f, 0.265f, 0.13f, 0.16f)
-            muscle(Muscle.OBLIQUES, 0.385f, 0.265f, 0.045f, 0.12f); muscle(Muscle.OBLIQUES, 0.57f, 0.265f, 0.045f, 0.12f)
-            muscle(Muscle.QUADS, 0.385f, 0.50f, 0.095f, 0.20f); muscle(Muscle.QUADS, 0.52f, 0.50f, 0.095f, 0.20f)
-            muscle(Muscle.CALVES, 0.375f, 0.75f, 0.075f, 0.13f); muscle(Muscle.CALVES, 0.55f, 0.75f, 0.075f, 0.13f)
-        } else {
-            muscle(Muscle.TRAPS, 0.40f, 0.125f, 0.20f, 0.065f)
-            muscle(Muscle.SHOULDERS, 0.27f, 0.14f, 0.09f, 0.06f); muscle(Muscle.SHOULDERS, 0.64f, 0.14f, 0.09f, 0.06f)
-            muscle(Muscle.LATS, 0.375f, 0.20f, 0.11f, 0.16f); muscle(Muscle.LATS, 0.515f, 0.20f, 0.11f, 0.16f)
-            muscle(Muscle.TRICEPS, 0.245f, 0.20f, 0.075f, 0.11f); muscle(Muscle.TRICEPS, 0.68f, 0.20f, 0.075f, 0.11f)
-            muscle(Muscle.GLUTES, 0.40f, 0.435f, 0.095f, 0.085f); muscle(Muscle.GLUTES, 0.505f, 0.435f, 0.095f, 0.085f)
-            muscle(Muscle.HAMSTRINGS, 0.385f, 0.545f, 0.095f, 0.17f); muscle(Muscle.HAMSTRINGS, 0.52f, 0.545f, 0.095f, 0.17f)
-            muscle(Muscle.CALVES, 0.375f, 0.75f, 0.075f, 0.13f); muscle(Muscle.CALVES, 0.55f, 0.75f, 0.075f, 0.13f)
         }
     }
 }
 
-private fun DrawScope.pt(x: Float, y: Float) = Offset(x * size.width, y * size.height)
-
-/** Capsule limb: thick round-capped line in unit coords; width relative to canvas width. */
-private fun DrawScope.limb(x1: Float, y1: Float, x2: Float, y2: Float, w: Float, color: Color) {
-    drawLine(color, pt(x1, y1), pt(x2, y2), strokeWidth = w * size.width, cap = StrokeCap.Round)
-}
-
-/** Tapered torso: shoulders wide, waist narrow, hips flare. */
-private fun DrawScope.torso(color: Color) {
-    val path = Path().apply {
-        moveTo(pt(0.32f, 0.135f).x, pt(0.32f, 0.135f).y)
-        lineTo(pt(0.68f, 0.135f).x, pt(0.68f, 0.135f).y)
-        cubicTo(
-            pt(0.66f, 0.30f).x, pt(0.66f, 0.30f).y,
-            pt(0.63f, 0.38f).x, pt(0.63f, 0.38f).y,
-            pt(0.62f, 0.46f).x, pt(0.62f, 0.46f).y,
-        )
-        cubicTo(
-            pt(0.60f, 0.53f).x, pt(0.60f, 0.53f).y,
-            pt(0.40f, 0.53f).x, pt(0.40f, 0.53f).y,
-            pt(0.38f, 0.46f).x, pt(0.38f, 0.46f).y,
-        )
-        cubicTo(
-            pt(0.37f, 0.38f).x, pt(0.37f, 0.38f).y,
-            pt(0.34f, 0.30f).x, pt(0.34f, 0.30f).y,
-            pt(0.32f, 0.135f).x, pt(0.32f, 0.135f).y,
-        )
-        close()
-    }
-    drawPath(path, color)
+/** Mirror a left-side region across the figure's vertical center line (x = 50). */
+private fun Path.mirrored(): Path {
+    val m = androidx.compose.ui.graphics.Matrix()
+    m.translate(BodyPaths.VW, 0f, 0f)
+    m.scale(-1f, 1f, 1f)
+    val copy = Path().apply { addPath(this@mirrored) }
+    copy.transform(m)
+    return copy
 }
