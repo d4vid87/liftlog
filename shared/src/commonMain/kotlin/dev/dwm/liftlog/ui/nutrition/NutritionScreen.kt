@@ -45,7 +45,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
+import coil3.compose.SubcomposeAsyncImage
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -88,6 +91,10 @@ val meals = listOf("Breakfast", "Lunch", "Dinner", "Snack")
 
 fun todayEpochDay(): Long = Clock.System.todayIn(TimeZone.currentSystemDefault()).toEpochDays().toLong()
 
+// ponytail: process-lifetime "already asked OFF" set so day-swipes don't re-query. Resets on app
+// restart, which doubles as the retry policy for foods that had no match last time.
+private val offImageTried = mutableSetOf<String>()
+
 @Composable
 fun NutritionScreen(
     db: AppDatabase,
@@ -118,6 +125,16 @@ fun NutritionScreen(
     LaunchedEffect(logs) {
         foods = logs.map { it.foodId }.distinct()
             .mapNotNull { db.foodDao().byId(it) }.associateBy { it.id }
+        // best-effort: fetch a stock food photo for anything logged without one, once per session
+        for (f in foods.values) {
+            if (f.imageUrl == null && offImageTried.add(f.id)) {
+                off.imageFor(f.name)?.let { url ->
+                    val updated = f.copy(imageUrl = url, updatedAt = nowMillis())
+                    db.foodDao().upsert(updated) // updatedAt bump propagates via LWW sync
+                    foods = foods + (updated.id to updated)
+                }
+            }
+        }
     }
     var week by remember { mutableStateOf<List<DailyMacro>>(emptyList()) }
     var targetKcal by remember { mutableStateOf(2000.0) }
@@ -394,7 +411,7 @@ fun NutritionScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    FoodCircle(food?.name ?: "?")
+                    FoodImage(food)
                     Column(Modifier.weight(1f)) {
                         Text(food?.name ?: "…", style = MaterialTheme.typography.bodyMedium)
                         Text(
@@ -489,6 +506,25 @@ private fun macroLine(food: Food, grams: Double): String {
 private val circleColors = listOf(
     Palette.Protein, Palette.Carbs, Palette.Fat, Palette.Calories, Palette.Trend, Palette.Success,
 )
+
+@Composable
+private fun FoodImage(food: Food?) {
+    val url = food?.imageUrl
+    if (url == null) { FoodCircle(food?.name ?: "?"); return }
+    Box(
+        Modifier.size(38.dp).clip(androidx.compose.foundation.shape.CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        SubcomposeAsyncImage(
+            model = url,
+            contentDescription = food.name,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+            loading = { FoodCircle(food.name) },
+            error = { FoodCircle(food.name) },
+        )
+    }
+}
 
 @Composable
 private fun FoodCircle(name: String) {
@@ -763,7 +799,7 @@ private fun FoodResultRow(food: Food, onPlus: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        FoodCircle(food.name)
+        FoodImage(food)
         Column(Modifier.weight(1f)) {
             Text(food.name, style = MaterialTheme.typography.bodyMedium)
             Text(

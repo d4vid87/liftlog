@@ -23,6 +23,13 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
     }
 }
 
+// v8: food thumbnail from Open Food Facts — additive
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL("ALTER TABLE Food ADD COLUMN imageUrl TEXT")
+    }
+}
+
 @Database(
     entities = [
         Exercise::class, Workout::class, WorkoutSet::class,
@@ -30,7 +37,7 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
         Food::class, FoodLog::class, WeightEntry::class, Setting::class,
         GroceryItem::class, Routine::class, RoutineExercise::class,
     ],
-    version = 7,
+    version = 8,
 )
 @ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {

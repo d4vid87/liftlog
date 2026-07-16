@@ -20,6 +20,7 @@ private data class OffProduct(
     val code: String? = null,
     @SerialName("product_name") val productName: String? = null,
     val brands: String? = null,
+    @SerialName("image_front_small_url") val imageFrontSmallUrl: String? = null,
     val nutriments: JsonObject? = null,
 )
 
@@ -55,6 +56,7 @@ class OpenFoodFacts(engineClient: HttpClient) {
             carbs = nutrient("carbohydrates") ?: 0.0,
             fat = nutrient("fat") ?: 0.0,
             microsJson = if (micros.isEmpty()) null else "{${micros.joinToString(",")}}",
+            imageUrl = imageFrontSmallUrl?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -66,8 +68,13 @@ class OpenFoodFacts(engineClient: HttpClient) {
             parameter("action", "process")
             parameter("json", 1)
             parameter("page_size", 20)
+            parameter("fields", "code,product_name,brands,image_front_small_url,nutriments")
         }.body<OffSearch>().products.mapNotNull { it.toFood() }
     }.getOrDefault(emptyList())
+
+    /** Best-effort stock thumbnail for a free-text food name (first search hit with an image). */
+    suspend fun imageFor(name: String): String? =
+        search(name).firstNotNullOfOrNull { it.imageUrl }
 
     /** Contribute a product upstream to Open Food Facts (crowdsourced DB, they moderate). */
     suspend fun submitProduct(food: Food, user: String, password: String): Boolean = runCatching {

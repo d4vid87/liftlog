@@ -98,6 +98,8 @@ class AiClient(
             Estimate portion size in grams using visible cues: a dinner plate is ~27 cm across, use
             cutlery or hands for scale, and typical cooked food densities. Keep kcal and macros
             consistent with the grams you state. When unsure, prefer common serving sizes over guesses.
+            Include any visible brand or product name in the food name (e.g. "Optimum Nutrition Gold
+            Standard Whey", not "protein shake") so it can be matched to a product photo.
             Reply with ONLY a JSON array, no prose:
             [{"name": "...", "grams": <portion grams>, "kcal": <kcal for that portion>, "protein": <g>, "carbs": <g>, "fat": <g>}]
         """.trimIndent()

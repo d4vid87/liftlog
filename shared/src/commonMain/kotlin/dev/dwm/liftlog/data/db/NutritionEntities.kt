@@ -17,6 +17,7 @@ data class Food(
     val carbs: Double,
     val fat: Double,
     val microsJson: String? = null,
+    val imageUrl: String? = null,
     val custom: Boolean = false,
     val updatedAt: Long = nowMillis(),
     val deletedAt: Long? = null,
