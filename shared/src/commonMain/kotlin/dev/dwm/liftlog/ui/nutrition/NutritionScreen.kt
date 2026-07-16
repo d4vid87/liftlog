@@ -56,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import dev.dwm.liftlog.ui.CapturedPhoto
 import dev.dwm.liftlog.ui.Palette
 import dev.dwm.liftlog.ui.components.FlatBar
 import dev.dwm.liftlog.ui.components.HeroNumber
@@ -95,13 +96,33 @@ fun todayEpochDay(): Long = Clock.System.todayIn(TimeZone.currentSystemDefault()
 // restart, which doubles as the retry policy for foods that had no match last time.
 private val offImageTried = mutableSetOf<String>()
 
+/**
+ * Insert AI-parsed foods, giving each a picture: a branded/stock Open Food Facts photo when the
+ * name matches, otherwise the user's own snapped photo. Returns the new FoodLog ids (for undo).
+ */
+private suspend fun logParsedFoods(
+    db: AppDatabase, off: OpenFoodFacts, day: Long, meal: String,
+    parsed: List<ParsedFood>, photoUri: String?,
+): List<String> {
+    val ids = mutableListOf<String>()
+    for (p in parsed) {
+        val img = runCatching { off.imageFor(p.name) }.getOrNull() ?: photoUri
+        val food = p.toFood().let { if (img != null) it.copy(imageUrl = img) else it }
+        db.foodDao().upsert(food)
+        val log = FoodLog(epochDay = day, foodId = food.id, grams = p.grams, meal = meal)
+        db.foodLogDao().insert(log)
+        ids.add(log.id)
+    }
+    return ids
+}
+
 @Composable
 fun NutritionScreen(
     db: AppDatabase,
     off: OpenFoodFacts,
     modifier: Modifier = Modifier,
     scanBarcode: (suspend () -> String?)? = null,
-    takePhoto: (suspend () -> String?)? = null,
+    takePhoto: (suspend () -> CapturedPhoto?)? = null,
 ) {
     val scope = rememberCoroutineScope()
     val today = remember { todayEpochDay() }
@@ -125,13 +146,17 @@ fun NutritionScreen(
     LaunchedEffect(logs) {
         foods = logs.map { it.foodId }.distinct()
             .mapNotNull { db.foodDao().byId(it) }.associateBy { it.id }
-        // best-effort: fetch a stock food photo for anything logged without one, once per session
+        // best-effort: fetch a stock food photo for anything logged without one, once per session.
+        // Launched on the screen scope (not this logs-keyed effect) so a fresh insert re-running the
+        // effect can't cancel the in-flight lookup and strand the food you just added.
         for (f in foods.values) {
             if (f.imageUrl == null && offImageTried.add(f.id)) {
-                off.imageFor(f.name)?.let { url ->
-                    val updated = f.copy(imageUrl = url, updatedAt = nowMillis())
-                    db.foodDao().upsert(updated) // updatedAt bump propagates via LWW sync
-                    foods = foods + (updated.id to updated)
+                scope.launch {
+                    off.imageFor(f.name)?.let { url ->
+                        val updated = f.copy(imageUrl = url, updatedAt = nowMillis())
+                        db.foodDao().upsert(updated) // updatedAt bump propagates via LWW sync
+                        foods = foods + (updated.id to updated)
+                    }
                 }
             }
         }
@@ -162,22 +187,16 @@ fun NutritionScreen(
         LogFoodsDialog(
             db, off, scanBarcode, takePhoto,
             onDismiss = { addingTo = null },
+            // keep the sheet open on add — the dialog shows a "✓ Added" line so you can log several
+            // foods in a row; the X / Done closes it. (Previously each add tore down the sheet.)
             onAdd = { food, grams ->
                 scope.launch {
                     db.foodDao().upsert(food)
                     db.foodLogDao().insert(FoodLog(epochDay = day, foodId = food.id, grams = grams, meal = meal))
                 }
-                addingTo = null
             },
-            onLogParsed = { parsed ->
-                scope.launch {
-                    parsed.forEach { p ->
-                        val food = p.toFood()
-                        db.foodDao().upsert(food)
-                        db.foodLogDao().insert(FoodLog(epochDay = day, foodId = food.id, grams = p.grams, meal = meal))
-                    }
-                }
-                addingTo = null
+            onLogParsed = { parsed, photoUri ->
+                scope.launch { logParsedFoods(db, off, day, meal, parsed, photoUri) }
             },
         )
     }
@@ -214,21 +233,13 @@ fun NutritionScreen(
             val client = aiClient(db).getOrElse {
                 snapError = it.message ?: "AI not configured"; snapBusy = false; return@launch
             }
-            val parsed = runCatching { client.parseFoods("", photo) }
+            val parsed = runCatching { client.parseFoods("", photo.base64) }
                 .getOrElse { snapError = "Photo parse failed: ${it.message}"; snapBusy = false; return@launch }
             if (parsed.isEmpty()) {
                 snapError = "Couldn't identify any food in the photo"
             } else {
                 val meal = mealForNow()
-                val ids = mutableListOf<String>()
-                parsed.forEach { p ->
-                    val food = p.toFood()
-                    db.foodDao().upsert(food)
-                    val log = FoodLog(epochDay = day, foodId = food.id, grams = p.grams, meal = meal)
-                    db.foodLogDao().insert(log)
-                    ids.add(log.id)
-                }
-                undoIds = ids
+                undoIds = logParsedFoods(db, off, day, meal, parsed, photo.localUri)
                 undoLabel = "Logged ${parsed.size} food${if (parsed.size > 1) "s" else ""} to $meal (${parsed.sumOf { it.kcal }.toInt()} kcal)"
             }
             snapBusy = false
@@ -748,18 +759,24 @@ private fun LogFoodsDialog(
     db: AppDatabase,
     off: OpenFoodFacts,
     scanBarcode: (suspend () -> String?)?,
-    takePhoto: (suspend () -> String?)?,
+    takePhoto: (suspend () -> CapturedPhoto?)?,
     onDismiss: () -> Unit,
     onAdd: (Food, Double) -> Unit,
-    onLogParsed: (List<ParsedFood>) -> Unit,
+    onLogParsed: (List<ParsedFood>, String?) -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
     val tabs = buildList {
         if (scanBarcode != null) add("Scan")
         add("Search"); add("AI"); add("Quick Add")
     }
     var tab by remember { mutableStateOf("Search") }
     var grams by remember { mutableStateOf("") }
+    var addedCount by remember { mutableStateOf(0) }
+    var lastAdded by remember { mutableStateOf("") }
+    // wrap the callbacks so the sheet stays open and shows a running "added" tally
+    val addOne: (Food, Double) -> Unit = { food, g -> onAdd(food, g); lastAdded = food.name; addedCount++ }
+    val logParsed: (List<ParsedFood>, String?) -> Unit = { parsed, uri ->
+        onLogParsed(parsed, uri); lastAdded = "${parsed.size} item${if (parsed.size > 1) "s" else ""}"; addedCount += parsed.size
+    }
 
     dev.dwm.liftlog.ui.components.FullScreenDialog("Log Foods", onDismiss) {
         Column(
@@ -771,11 +788,18 @@ private fun LogFoodsDialog(
                     FilterChip(selected = tab == t, onClick = { tab = t }, label = { Text(t) })
                 }
             }
+            if (addedCount > 0) {
+                Text(
+                    "✓ Added $lastAdded  ·  $addedCount logged — tap ✕ when done",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.Success,
+                )
+            }
             when (tab) {
-                "Scan" -> ScanTab(db, off, scanBarcode!!, grams, { grams = it }, onAdd)
-                "Search" -> SearchTab(db, off, grams, { grams = it }, onAdd)
-                "AI" -> AiTab(db, takePhoto, onLogParsed)
-                "Quick Add" -> QuickAddTab(onAdd)
+                "Scan" -> ScanTab(db, off, scanBarcode!!, grams, { grams = it }, addOne)
+                "Search" -> SearchTab(db, off, grams, { grams = it }, addOne)
+                "AI" -> AiTab(db, takePhoto, logParsed)
+                "Quick Add" -> QuickAddTab(addOne)
             }
         }
     }
@@ -830,14 +854,21 @@ private fun SearchTab(
     var results by remember { mutableStateOf<List<Food>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
 
-    // recents on open; local search-as-you-type (debounced); OFF only on "Web"
+    // recents on open; local search-as-you-type, then auto Open Food Facts (with photos) after a
+    // longer pause so branded thumbnails appear inline — no need to tap "Web"
     LaunchedEffect(query) {
         if (query.isBlank()) {
             results = db.foodDao().recentFoods()
-        } else {
-            kotlinx.coroutines.delay(250)
-            results = db.foodDao().search(query)
+            return@LaunchedEffect
         }
+        kotlinx.coroutines.delay(250)
+        val local = db.foodDao().search(query)
+        results = local
+        kotlinx.coroutines.delay(350)
+        searching = true
+        val remote = off.search(query).filter { r -> local.none { it.barcode != null && it.barcode == r.barcode } }
+        searching = false
+        if (remote.isNotEmpty()) results = local + remote
     }
 
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -951,14 +982,15 @@ private fun ScanTab(
 @Composable
 private fun AiTab(
     db: AppDatabase,
-    takePhoto: (suspend () -> String?)?,
-    onLog: (List<ParsedFood>) -> Unit,
+    takePhoto: (suspend () -> CapturedPhoto?)?,
+    onLog: (List<ParsedFood>, String?) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var text by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var parsed by remember { mutableStateOf<List<ParsedFood>>(emptyList()) }
+    var photoUri by remember { mutableStateOf<String?>(null) }
 
     suspend fun runParse(imageB64: String?) {
         busy = true; error = ""
@@ -988,7 +1020,8 @@ private fun AiTab(
                 Button(onClick = {
                     scope.launch {
                         val photo = takePhoto()
-                        if (photo != null) runParse(photo) else error = "No photo taken"
+                        if (photo != null) { photoUri = photo.localUri; runParse(photo.base64) }
+                        else error = "No photo taken"
                     }
                 }, enabled = !busy) { Text("Snap Photo") }
             }
@@ -1002,7 +1035,7 @@ private fun AiTab(
             )
         }
         if (parsed.isNotEmpty()) {
-            Button(onClick = { onLog(parsed) }, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = { onLog(parsed, photoUri) }, modifier = Modifier.fillMaxWidth()) {
                 Text("Log ${parsed.size} item(s)")
             }
         }

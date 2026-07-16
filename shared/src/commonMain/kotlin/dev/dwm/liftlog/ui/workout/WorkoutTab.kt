@@ -1536,6 +1536,8 @@ internal fun TempoBar(tempo: String, onStop: () -> Unit) {
     var phase by remember { mutableStateOf(0) }
     var count by remember { mutableStateOf(0) }
     LaunchedEffect(tempo) {
+        if (phases.none { it > 0 }) return@LaunchedEffect // guard: all-zero/unparseable tempo would busy-spin the loop
+        var nextAt = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
         while (true) {
             for (p in phases.indices) {
                 val len = phases[p]
@@ -1544,7 +1546,8 @@ internal fun TempoBar(tempo: String, onStop: () -> Unit) {
                     count = s
                     playTone(when (p) { 0 -> Tone.Low; 2 -> Tone.High; else -> Tone.Tick })
                     haptic(Haptic.Tick)
-                    delay(1000)
+                    nextAt += 1000 // anchor cadence to a fixed grid so the beat doesn't drift slow
+                    delay((nextAt - kotlinx.datetime.Clock.System.now().toEpochMilliseconds()).coerceAtLeast(0))
                 }
             }
         }

@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import dev.dwm.liftlog.data.db.createDatabase
 import dev.dwm.liftlog.ui.App
+import dev.dwm.liftlog.ui.CapturedPhoto
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
@@ -39,7 +40,8 @@ class MainActivity : ComponentActivity() {
             speechContinuation = null
         }
 
-    private fun decodeDownscaled(file: java.io.File): String? = runCatching {
+    // downscaled JPEG bytes (≤1536px longest side): full-res capture is useless-large for AI + display
+    private fun scaledJpeg(file: java.io.File): ByteArray? = runCatching {
         val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         android.graphics.BitmapFactory.decodeFile(file.path, bounds)
         val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
@@ -54,7 +56,7 @@ class MainActivity : ComponentActivity() {
         } else bitmap
         val out = ByteArrayOutputStream()
         scaled.compress(Bitmap.CompressFormat.JPEG, 85, out)
-        Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        out.toByteArray()
     }.getOrNull()
 
     override fun onDestroy() {
@@ -101,7 +103,18 @@ class MainActivity : ComponentActivity() {
                             cont.resume(false)
                         }
                     }
-                    if (ok && file.exists()) decodeDownscaled(file) else null
+                    val bytes = if (ok && file.exists()) scaledJpeg(file) else null
+                    bytes?.let {
+                        val b64 = Base64.encodeToString(it, Base64.NO_WRAP)
+                        // persist a copy so the diary can show the photo the user took (ponytail: no cleanup — personal app)
+                        val uriStr = runCatching {
+                            val dir = java.io.File(filesDir, "food-photos").apply { mkdirs() }
+                            val dest = java.io.File(dir, "${java.util.UUID.randomUUID()}.jpg")
+                            dest.writeBytes(it)
+                            "file://${dest.absolutePath}"
+                        }.getOrNull()
+                        CapturedPhoto(b64, uriStr)
+                    }
                 },
                 voiceInput = {
                     suspendCancellableCoroutine { cont ->

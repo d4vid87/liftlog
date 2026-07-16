@@ -57,20 +57,53 @@ actual fun haptic(kind: Haptic) {
 private val alarmTone by lazy {
     runCatching { android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100) }.getOrNull()
 }
-private val tempoTone by lazy {
-    runCatching { android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 80) }.getOrNull()
-}
 private var tts: android.speech.tts.TextToSpeech? = null
 private var ttsReady = false
 
+// pleasant tempo notes: a soft enveloped sine (marimba-ish pluck), synthesized to PCM once per
+// pitch — replaces the harsh DTMF ToneGenerator beeps. DOWN low, UP high, pause a quieter tick.
+private const val TONE_SR = 44100
+private fun toneBuffer(freqHz: Double, ms: Int, peak: Double): ShortArray {
+    val n = TONE_SR * ms / 1000
+    val buf = ShortArray(n)
+    for (i in 0 until n) {
+        val t = i.toDouble() / TONE_SR
+        val env = Math.exp(-t * 22.0) * (1.0 - Math.exp(-t * 500.0)) // fast attack, exp decay
+        buf[i] = (Math.sin(2.0 * Math.PI * freqHz * t) * env * peak * Short.MAX_VALUE).toInt().toShort()
+    }
+    return buf
+}
+private val toneBuffers by lazy {
+    mapOf(
+        Tone.Low to toneBuffer(392.0, 150, 0.6),   // G4
+        Tone.High to toneBuffer(587.0, 150, 0.6),  // D5
+        Tone.Tick to toneBuffer(494.0, 90, 0.35),  // B4, softer
+    )
+}
+
 actual fun playTone(t: Tone) {
+    val buf = toneBuffers[t] ?: return
     runCatching {
-        val tone = when (t) {
-            Tone.Low -> android.media.ToneGenerator.TONE_DTMF_1
-            Tone.High -> android.media.ToneGenerator.TONE_DTMF_9
-            Tone.Tick -> android.media.ToneGenerator.TONE_PROP_BEEP
-        }
-        tempoTone?.startTone(tone, 150)
+        val track = android.media.AudioTrack(
+            android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build(),
+            android.media.AudioFormat.Builder()
+                .setSampleRate(TONE_SR)
+                .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                .build(),
+            buf.size * 2,
+            android.media.AudioTrack.MODE_STATIC,
+            android.media.AudioManager.AUDIO_SESSION_ID_GENERATE,
+        )
+        track.write(buf, 0, buf.size)
+        track.play()
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+            { runCatching { track.stop(); track.release() } },
+            buf.size * 1000L / TONE_SR + 60,
+        )
     }
 }
 

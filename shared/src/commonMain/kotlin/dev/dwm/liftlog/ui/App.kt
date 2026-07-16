@@ -74,7 +74,7 @@ fun App(
     db: AppDatabase,
     scanBarcode: (suspend () -> String?)? = null,
     saveExport: (suspend (String) -> String)? = null,
-    takePhoto: (suspend () -> String?)? = null,
+    takePhoto: (suspend () -> CapturedPhoto?)? = null,
     voiceInput: (suspend () -> String?)? = null,
     uiScale: Float? = null,
     onUiScale: ((Float) -> Unit)? = null,
